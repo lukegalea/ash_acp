@@ -1,0 +1,73 @@
+{
+  "description": "denied approval: the host approval seam denies before execution; the turn ends refused with a failed tool call update",
+  "expected": [
+    {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "result": {
+        "agentCapabilities": {
+          "loadSession": true,
+          "mcpCapabilities": {
+            "http": false,
+            "sse": false
+          },
+          "promptCapabilities": {
+            "audio": false,
+            "embeddedContext": false,
+            "image": false
+          },
+          "sessionCapabilities": {}
+        },
+        "agentInfo": {
+          "name": "fake_host",
+          "title": "Fake Host",
+          "version": "1.0.0"
+        },
+        "authMethods": [],
+        "protocolVersion": 1
+      }
+    },
+    {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "result": {
+        "sessionId": "sess-1"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "sess-1",
+        "update": {
+          "content": [
+            {
+              "text": "Permission denied",
+              "type": "text"
+            }
+          ],
+          "sessionUpdate": "tool_call_update",
+          "status": "failed",
+          "toolCallId": "tc-1"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "result": {
+        "stopReason": "refusal"
+      }
+    }
+  ],
+  "input": [
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":1}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session/new\",\"params\":{\"cwd\":\"/home/operator\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"session/prompt\",\"params\":{\"sessionId\":\"sess-1\",\"prompt\":[{\"type\":\"text\",\"text\":\"ship it\"}]}}"
+  ],
+  "setup": {
+    "actor": "operator",
+    "permission": "denied",
+    "prompt": "publish"
+  }
+}

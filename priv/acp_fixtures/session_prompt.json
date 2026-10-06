@@ -1,0 +1,123 @@
+{
+  "description": "prompt turn: action runs with authorize?: true, updates stream, the closing update carries Ash.can?-pruned available actions and the host's surface descriptors",
+  "expected": [
+    {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "result": {
+        "agentCapabilities": {
+          "loadSession": true,
+          "mcpCapabilities": {
+            "http": false,
+            "sse": false
+          },
+          "promptCapabilities": {
+            "audio": false,
+            "embeddedContext": false,
+            "image": false
+          },
+          "sessionCapabilities": {}
+        },
+        "agentInfo": {
+          "name": "fake_host",
+          "title": "Fake Host",
+          "version": "1.0.0"
+        },
+        "authMethods": [],
+        "protocolVersion": 1
+      }
+    },
+    {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "result": {
+        "sessionId": "sess-1"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "sess-1",
+        "update": {
+          "kind": "read",
+          "name": "FakeHost.Note.summarize",
+          "rawInput": {
+            "text": "hello"
+          },
+          "sessionUpdate": "tool_call",
+          "status": "in_progress",
+          "title": "Summarize",
+          "toolCallId": "tc-1"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "sess-1",
+        "update": {
+          "content": {
+            "text": "Summary: hello",
+            "type": "text"
+          },
+          "sessionUpdate": "agent_message_chunk"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "sess-1",
+        "update": {
+          "availableCommands": [
+            {
+              "description": "Summarize the given text",
+              "name": "FakeHost.Note.summarize"
+            },
+            {
+              "description": "Only actors may run this",
+              "name": "FakeHost.Note.restricted"
+            }
+          ],
+          "sessionUpdate": "available_commands_update",
+          "surface": {
+            "title": "Notes",
+            "type": "list"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "sess-1",
+        "update": {
+          "sessionUpdate": "tool_call_update",
+          "status": "completed",
+          "toolCallId": "tc-1"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "result": {
+        "stopReason": "end_turn"
+      }
+    }
+  ],
+  "input": [
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":1}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session/new\",\"params\":{\"cwd\":\"/home/operator\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"session/prompt\",\"params\":{\"sessionId\":\"sess-1\",\"prompt\":[{\"type\":\"text\",\"text\":\"hello\"}]}}"
+  ],
+  "setup": {
+    "actor": "operator",
+    "permission": "approved",
+    "prompt": "summarize"
+  }
+}

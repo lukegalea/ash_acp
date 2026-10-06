@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2026 Luke Galea
+#
+# SPDX-License-Identifier: MIT
+/_build/
+/deps/
+/doc/
+/priv/plts/
+*.plt
+*.plt.cache
+erl_crash.dump
+.elixir_ls/
+/.elixir-tools/
+.elixir-tools/

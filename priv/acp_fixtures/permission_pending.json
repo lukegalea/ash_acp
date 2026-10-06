@@ -1,0 +1,158 @@
+{
+  "description": "pending approval: the prompt surfaces session/request_permission to the client; the client's allow_once answer executes the action",
+  "expected": [
+    {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "result": {
+        "agentCapabilities": {
+          "loadSession": true,
+          "mcpCapabilities": {
+            "http": false,
+            "sse": false
+          },
+          "promptCapabilities": {
+            "audio": false,
+            "embeddedContext": false,
+            "image": false
+          },
+          "sessionCapabilities": {}
+        },
+        "agentInfo": {
+          "name": "fake_host",
+          "title": "Fake Host",
+          "version": "1.0.0"
+        },
+        "authMethods": [],
+        "protocolVersion": 1
+      }
+    },
+    {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "result": {
+        "sessionId": "sess-1"
+      }
+    },
+    {
+      "id": "srv-1",
+      "jsonrpc": "2.0",
+      "method": "session/request_permission",
+      "params": {
+        "_meta": {
+          "requestRef": "approval-ref-1"
+        },
+        "options": [
+          {
+            "kind": "allow_once",
+            "name": "Allow once",
+            "optionId": "allow_once"
+          },
+          {
+            "kind": "allow_always",
+            "name": "Allow always",
+            "optionId": "allow_always"
+          },
+          {
+            "kind": "reject_once",
+            "name": "Reject once",
+            "optionId": "reject_once"
+          }
+        ],
+        "sessionId": "sess-1",
+        "toolCall": {
+          "kind": "execute",
+          "status": "pending",
+          "title": "Publish bulletin",
+          "toolCallId": "tc-1"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "result": {
+        "stopReason": "end_turn"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "sess-1",
+        "update": {
+          "kind": "execute",
+          "name": "FakeHost.Note.publish_bulletin",
+          "rawInput": {
+            "text": "ship it"
+          },
+          "sessionUpdate": "tool_call",
+          "status": "in_progress",
+          "title": "Publish bulletin",
+          "toolCallId": "tc-2"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "sess-1",
+        "update": {
+          "content": {
+            "text": "Bulletin published: ship it",
+            "type": "text"
+          },
+          "sessionUpdate": "agent_message_chunk"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "sess-1",
+        "update": {
+          "availableCommands": [
+            {
+              "description": "Summarize the given text",
+              "name": "FakeHost.Note.summarize"
+            },
+            {
+              "description": "Only actors may run this",
+              "name": "FakeHost.Note.restricted"
+            }
+          ],
+          "sessionUpdate": "available_commands_update",
+          "surface": {
+            "title": "Notes",
+            "type": "list"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "sess-1",
+        "update": {
+          "sessionUpdate": "tool_call_update",
+          "status": "completed",
+          "toolCallId": "tc-2"
+        }
+      }
+    }
+  ],
+  "input": [
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":1}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session/new\",\"params\":{\"cwd\":\"/home/operator\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"session/prompt\",\"params\":{\"sessionId\":\"sess-1\",\"prompt\":[{\"type\":\"text\",\"text\":\"ship it\"}]}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":\"srv-1\",\"result\":{\"outcome\":{\"outcome\":\"selected\",\"optionId\":\"allow_once\"}}}"
+  ],
+  "setup": {
+    "actor": "operator",
+    "permission": "pending",
+    "prompt": "publish"
+  }
+}
