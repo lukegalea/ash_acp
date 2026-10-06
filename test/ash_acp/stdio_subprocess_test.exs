@@ -127,6 +127,9 @@ defmodule AshAcp.StdioSubprocessTest do
     remaining = deadline - System.monotonic_time(:millisecond)
 
     if remaining <= 0 do
+      # close BEFORE failing: an orphaned mix child holding a half-closed
+      # pipe is the hung-mix hazard (SIGPIPE only fires on further writes)
+      Port.close(port)
       fail("timed out waiting for a matching stdout line; got: #{inspect(Enum.reverse(buffer))}")
     end
 
@@ -143,6 +146,7 @@ defmodule AshAcp.StdioSubprocessTest do
         do_wait(port, predicate, deadline, [partial | buffer])
 
       {^port, {:exit_status, status}} ->
+        Port.close(port)
         fail("child exited with status #{status}; got: #{inspect(Enum.reverse(buffer))}")
     after
       100 -> do_wait(port, predicate, deadline, buffer)

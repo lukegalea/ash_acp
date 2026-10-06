@@ -437,10 +437,12 @@ defmodule AshAcp.ServerTest do
 
   describe "read action dispatch" do
     setup do
+      ts = ~U[2026-10-06 08:30:15.123456Z]
+
       FakeHost.set_notes([
-        %FakeHost.Note{id: "n-1", title: "alpha", body: "first"},
-        %FakeHost.Note{id: "n-2", title: "beta", body: "second"},
-        %FakeHost.Note{id: "n-3", title: "gamma", body: "third"}
+        %FakeHost.Note{id: "n-1", title: "alpha", body: "first", inserted_at: ts, updated_at: ts},
+        %FakeHost.Note{id: "n-2", title: "beta", body: "second", inserted_at: ts, updated_at: ts},
+        %FakeHost.Note{id: "n-3", title: "gamma", body: "third", inserted_at: ts, updated_at: ts}
       ])
 
       FakeHost.set_prompt_mode({:ok, :list_notes})
@@ -464,12 +466,25 @@ defmodule AshAcp.ServerTest do
       chunk = rows_update["params"]["update"]["content"]["text"] |> Jason.decode!()
       assert chunk["count"] == 3
 
-      # rows are string-keyed public attributes only (id, title, body)
+      # rows are string-keyed public attributes only (id, title, body,
+      # inserted_at, updated_at)
       assert Enum.all?(chunk["rows"], fn row ->
-               Map.keys(row) |> Enum.sort() == ["body", "id", "title"]
+               Map.keys(row) |> Enum.sort() == [
+                 "body",
+                 "id",
+                 "inserted_at",
+                 "title",
+                 "updated_at"
+               ]
              end)
 
-      assert %{"id" => "n-1", "title" => "alpha", "body" => "first"} in chunk["rows"]
+      assert %{
+               "id" => "n-1",
+               "title" => "alpha",
+               "body" => "first",
+               "inserted_at" => "2026-10-06T08:30:15.123456Z",
+               "updated_at" => "2026-10-06T08:30:15.123456Z"
+             } in chunk["rows"]
     end
 
     test "the row cap bounds output while the count reflects the total" do
@@ -499,6 +514,34 @@ defmodule AshAcp.ServerTest do
       assert [%{role: :user}, %{role: :agent, text: text}] = session.messages
       assert %{"count" => 3, "rows" => rows} = Jason.decode!(text)
       assert length(rows) == 3
+    end
+
+    test "timestamp columns stream as ISO8601 and the payload JSON round-trips" do
+      # every platform table has inserted_at/updated_at; a DateTime cell must
+      # serialize instead of crashing the turn (live E3 gate regression)
+      FakeHost.set_notes([
+        %FakeHost.Note{
+          id: "n-ts",
+          title: "dated",
+          body: "with timestamps",
+          inserted_at: ~U[2026-10-06 08:30:15.123456Z],
+          updated_at: ~U[2026-10-06 09:45:00.000000Z]
+        }
+      ])
+
+      {_, _, state} = session_new()
+      {response, notifications, _} = prompt(state)
+
+      assert response["result"] == %{"stopReason" => "end_turn"}
+
+      rows_update = Enum.find(notifications, &update_type(&1, "agent_message_chunk"))
+      text = rows_update["params"]["update"]["content"]["text"]
+
+      # full JSON round-trip — this is the assertion that used to crash on
+      # the Enumerable protocol
+      assert %{"count" => 1, "rows" => [row]} = Jason.decode!(text)
+      assert row["inserted_at"] == DateTime.to_iso8601(~U[2026-10-06 08:30:15.123456Z])
+      assert row["updated_at"] == DateTime.to_iso8601(~U[2026-10-06 09:45:00.000000Z])
     end
   end
 

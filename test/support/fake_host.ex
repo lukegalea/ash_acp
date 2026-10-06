@@ -27,6 +27,11 @@ defmodule FakeHost.Note do
     uuid_primary_key :id
     attribute :title, :string, public?: true
     attribute :body, :string, public?: true
+
+    # every platform table carries these; they must serialize to ISO8601
+    # on the wire (the DateTime row-serialization regression)
+    create_timestamp :inserted_at, public?: true
+    update_timestamp :updated_at, public?: true
   end
 
   actions do

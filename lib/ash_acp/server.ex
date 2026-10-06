@@ -903,11 +903,28 @@ defmodule AshAcp.Server do
 
   # == wire hygiene ==========================================================
 
-  # Everything placed inside a wire payload must have string keys — host
-  # values (agent info, approval records, action inputs, read rows) arrive
-  # with atom keys and would otherwise leak Elixir-isms onto a JSON wire.
+  # Everything placed inside a wire payload must be Jason-encodable with
+  # string keys. Host values arrive with atom keys and platform types, so:
+  # dates/times become ISO8601 strings, Decimals become floats (string when
+  # unrepresentable), unknown structs and non-encodable cells become inspect
+  # text — one exotic cell must never crash the turn.
+  defp stringify(%Date{} = value), do: Date.to_iso8601(value)
+  defp stringify(%DateTime{} = value), do: DateTime.to_iso8601(value)
+  defp stringify(%NaiveDateTime{} = value), do: NaiveDateTime.to_iso8601(value)
+  defp stringify(%Time{} = value), do: Time.to_iso8601(value)
+
+  defp stringify(%Decimal{} = value) do
+    Decimal.to_float(value)
+  rescue
+    _ -> Decimal.to_string(value)
+  end
+
+  defp stringify(value) when is_struct(value), do: inspect(value)
+
   defp stringify(value) when is_map(value) do
     Map.new(value, fn {k, v} -> {to_string(k), stringify(v)} end)
+  rescue
+    _ -> inspect(value)
   end
 
   defp stringify(value) when is_list(value), do: Enum.map(value, &stringify/1)
