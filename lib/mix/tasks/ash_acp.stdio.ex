@@ -23,6 +23,14 @@ defmodule Mix.Tasks.AshAcp.Stdio do
   @impl Mix.Task
   def run(_args) do
     Mix.Task.run("app.start")
+
+    # Host application logs must never reach stdout — it is the ACP wire.
+    # Silence at the task level; `AshAcp.Endpoint.run_stdio/1` additionally
+    # diverts the default Logger handler to stderr. Do NOT remove the
+    # handler: `:logger.remove_handler(:default)` makes logger_std_h close
+    # the stdout io server, and every later write dies with :terminated.
+    Logger.configure(level: :error)
+
     AshAcp.run_stdio()
   end
 end

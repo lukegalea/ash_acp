@@ -17,10 +17,13 @@ defmodule AshAcp.Endpoint do
   2. hand each to the pure server,
   3. write what comes back.
 
-  **stdout carries nothing but ndjson.** `run_stdio/1` diverts the default
-  logger handler and its process tree's group leader to stderr before the
-  loop starts, so host logging (including the loud seam-failure and crash
-  logs from `AshAcp.Server`) can never interleave with the wire stream.
+  **stdout carries nothing but ndjson.** The default Logger handler is
+  diverted to stderr before the loop starts (the mix task suppresses the
+  handler entirely), so host logging — including the loud seam-failure and
+  crash logs from `AshAcp.Server` — can never interleave with the wire
+  stream. The group leader is deliberately untouched: IO on `:standard_io`
+  resolves through it, and writes are instead routed through the raw `:user`
+  stdout device captured at boot.
 
   ## Cancellation
 
@@ -53,23 +56,28 @@ defmodule AshAcp.Endpoint do
   def run_stdio(opts \\ []) do
     keep_stdout_pure()
 
-    device = Keyword.get(opts, :device, :standard_io)
+    # The ORIGINAL stdout target, captured before anything else runs: the
+    # `:standard_io` ATOM resolves through the group leader per call, so we
+    # pin the same device by pid — writes are immune to any group-leader
+    # change a host callback makes later, and the group leader itself is
+    # never diverted (that breaks IO.read with instant EOF).
+    stdout = Keyword.get(opts, :device) || Process.group_leader()
+
     config = Keyword.get(opts, :config) || AshAcp.config()
     parent = self()
 
     reader =
       spawn(fn ->
-        read_lines(device, parent)
+        read_lines(stdout, parent)
       end)
 
-    loop(Server.new(config), reader, device)
+    loop(Server.new(config), reader, stdout)
   end
 
-  # stdout is the ACP wire. Logger's default handler writes to stdout, and
-  # seam callbacks (host code) may log or write to the group leader — both
-  # would corrupt the ndjson stream mid-message. Divert the default logger
-  # handler and this process tree's group leader to stderr, so stdout carries
-  # nothing but ndjson.
+  # stdout is the ACP wire. Only the default Logger handler is diverted (to
+  # stderr): the group leader is left strictly alone, because IO.read and
+  # IO.write on `:standard_io` resolve through it — diverting it breaks both
+  # reads (immediate EOF) and writes (:epipe).
   defp keep_stdout_pure do
     try do
       :logger.update_handler_config(:default, :set, %{config: %{type: :standard_error}})
@@ -77,11 +85,6 @@ defmodule AshAcp.Endpoint do
       _ -> :ok
     catch
       _, _ -> :ok
-    end
-
-    case Process.whereis(:standard_error) do
-      pid when is_pid(pid) -> Process.group_leader(self(), pid)
-      _ -> :ok
     end
 
     :ok
