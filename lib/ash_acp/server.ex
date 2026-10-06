@@ -33,6 +33,12 @@ defmodule AshAcp.Server do
   | `session/cancel` | none (answers the in-flight prompt with `stopReason: "cancelled"`) |
   | client responses to our `session/request_permission` | `AshAcp.PermissionRequest.resolve/3` |
 
+  A prompt turn that needs approval **stays open**: `session/request_permission`
+  goes out with no prompt response, and the prompt's response is only sent
+  when the client resolves the request — `end_turn` with the action's content
+  after approval, `refusal` after denial, `-32603` if a seam violates its
+  contract, or `cancelled` if the client cancels the turn meanwhile.
+
   ## Action dispatch
 
   The action a `AshAcp.PromptTarget` resolves is run according to its type:
@@ -468,9 +474,10 @@ defmodule AshAcp.Server do
   end
 
   # An approval request was recorded on the host's approval resource (ADR
-  # 0015). The client is asked through `session/request_permission`; the
-  # prompt response has already gone out — the outcome continues
-  # asynchronously through `handle_permission_outcome/3`.
+  # 0015). The client is asked through `session/request_permission` and the
+  # prompt turn STAYS OPEN — `in_flight` keeps the prompt's request id and no
+  # prompt response is sent yet. The client's answer completes the turn in
+  # `handle_permission_outcome/3`.
   defp request_permission(session, session_id, spec, request_id, request_ref, state) do
     {tool_call_id, state} = next_tool_call_id(state)
     {outbound_id, state} = next_outbound_id(state)
@@ -501,18 +508,17 @@ defmodule AshAcp.Server do
           })
     }
 
-    # A prompt request gets its turn-ending response; when the flow was
-    # reached via a client's answer to our own request_permission (no open
-    # request of theirs), there is nothing to answer.
-    response =
-      if request_id do
-        JsonRpc.response(request_id, %{"stopReason" => "end_turn"})
-      end
-
-    {response, [outbound], clear_in_flight(state, session_id)}
+    # No prompt response: the turn is still open. `in_flight` keeps the
+    # prompt's request id so a session/cancel can still answer it, and so a
+    # second prompt for the session is refused until the permission lands.
+    {nil, [outbound], state}
   end
 
-  # The client answered a pending session/request_permission.
+  # The client answered a pending session/request_permission: the open
+  # prompt turn completes now, and its response — addressed to the prompt's
+  # original request id — reflects the outcome. Approval executes the action
+  # (streaming its updates first, response last); denial ends the turn
+  # refused with a failed tool call update.
   defp handle_permission_outcome(permission, result, state) do
     %{session: session, session_id: session_id, action_spec: spec, tool_call_id: tool_call_id} =
       permission
@@ -528,31 +534,40 @@ defmodule AshAcp.Server do
 
     case resolved do
       {:approved, approval} ->
-        execute_action(session, session_id, spec, nil, state, approval)
+        execute_action(session, session_id, spec, permission.prompt_request_id, state, approval)
 
       {:denied} ->
         record(state, session, :agent, "Permission denied.")
 
-        {nil,
-         [
-           tool_call_update(session_id, tool_call_id, "failed", %{
-             "content" => [tool_content("Permission denied")]
-           })
-         ], state}
+        notifications = [
+          tool_call_update(session_id, tool_call_id, "failed", %{
+            "content" => [tool_content("Permission denied")]
+          })
+        ]
+
+        response =
+          if permission.prompt_request_id do
+            JsonRpc.response(permission.prompt_request_id, %{"stopReason" => "refusal"})
+          end
+
+        {response, notifications, clear_in_flight(state, session_id)}
 
       other ->
-        seam_violation(
-          permission.prompt_request_id,
-          permission_request!(state),
-          "resolve/3",
-          other,
-          state,
-          [
-            tool_call_update(session_id, tool_call_id, "failed", %{
-              "content" => [tool_content("Permission resolution failed")]
-            })
-          ]
-        )
+        {response, notifications, _} =
+          seam_violation(
+            permission.prompt_request_id,
+            permission_request!(state),
+            "resolve/3",
+            other,
+            state,
+            [
+              tool_call_update(session_id, tool_call_id, "failed", %{
+                "content" => [tool_content("Permission resolution failed")]
+              })
+            ]
+          )
+
+        {response, notifications, clear_in_flight(state, session_id)}
     end
   end
 

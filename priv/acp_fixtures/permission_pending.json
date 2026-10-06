@@ -69,13 +69,6 @@
       }
     },
     {
-      "id": 3,
-      "jsonrpc": "2.0",
-      "result": {
-        "stopReason": "end_turn"
-      }
-    },
-    {
       "jsonrpc": "2.0",
       "method": "session/update",
       "params": {
@@ -147,6 +140,13 @@
           "status": "completed",
           "toolCallId": "tc-2"
         }
+      }
+    },
+    {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "result": {
+        "stopReason": "end_turn"
       }
     }
   ],

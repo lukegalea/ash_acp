@@ -96,15 +96,16 @@ defmodule AshAcp.PermissionTest do
     end
   end
 
-  describe "pending approvals surfaced to the client" do
-    test "prompt produces a session/request_permission request and ends the turn" do
+  describe "pending approvals keep the prompt turn open" do
+    test "prompt emits session/request_permission with NO prompt response yet" do
       FakeHost.set_permission_mode({:pending, "approval-ref-1"})
       {_, _, state} = session_new()
 
       {response, [outbound], state} = publish_prompt(state)
 
-      # the turn closes; the permission flow continues asynchronously
-      assert response["result"] == %{"stopReason" => "end_turn"}
+      # the turn stays open: no response, in_flight still holds the prompt
+      assert response == nil
+      assert state.in_flight == %{"sess-1" => 3}
 
       assert outbound["id"] == "srv-1"
       assert outbound["method"] == "session/request_permission"
@@ -123,17 +124,17 @@ defmodule AshAcp.PermissionTest do
       assert params["_meta"]["requestRef"] == "approval-ref-1"
 
       # the pending request is tracked in state
-      assert %{session_id: "sess-1", request_ref: "approval-ref-1"} =
+      assert %{session_id: "sess-1", request_ref: "approval-ref-1", prompt_request_id: 3} =
                Map.fetch!(state.pending_permissions, "srv-1")
     end
 
-    test "client approval executes the action; denial propagates as denied" do
+    test "client approval streams the result then completes the prompt with end_turn" do
       FakeHost.set_permission_mode({:pending, "approval-ref-2"})
       {_, _, state} = session_new()
-      {_, _, state} = publish_prompt(state)
+      {nil, _, state} = publish_prompt(state)
 
       # the client answers "allow once"
-      {nil, notifications, _} =
+      {response, notifications, _} =
         Server.handle_message(
           %{
             "jsonrpc" => "2.0",
@@ -143,6 +144,22 @@ defmodule AshAcp.PermissionTest do
           state
         )
 
+      # the updates stream first, then the prompt response completes the turn
+      # addressed to the ORIGINAL prompt request id
+      assert response == %{
+               "jsonrpc" => "2.0",
+               "id" => 3,
+               "result" => %{"stopReason" => "end_turn"}
+             }
+
+      assert [
+               %{"sessionUpdate" => "tool_call"},
+               %{"sessionUpdate" => "agent_message_chunk"},
+               %{"sessionUpdate" => "available_commands_update"},
+               %{"sessionUpdate" => "tool_call_update"}
+             ] =
+               Enum.map(notifications, & &1["params"]["update"])
+
       chunk =
         Enum.find(
           notifications,
@@ -150,18 +167,14 @@ defmodule AshAcp.PermissionTest do
         )
 
       assert chunk["params"]["update"]["content"]["text"] == "Bulletin published: ship it"
+    end
 
-      completed =
-        Enum.find(notifications, &(&1["params"]["update"]["sessionUpdate"] == "tool_call_update"))
-
-      assert completed["params"]["update"]["status"] == "completed"
-
-      # fresh pending permission, then the client rejects
-      {_, _, state} = session_new()
+    test "client rejection completes the prompt refused" do
       FakeHost.set_permission_mode({:pending, "approval-ref-3"})
-      {_, _, state} = publish_prompt(state)
+      {_, _, state} = session_new()
+      {nil, _, state} = publish_prompt(state)
 
-      {nil, notifications, _} =
+      {response, notifications, _} =
         Server.handle_message(
           %{
             "jsonrpc" => "2.0",
@@ -170,6 +183,12 @@ defmodule AshAcp.PermissionTest do
           },
           state
         )
+
+      assert response == %{
+               "jsonrpc" => "2.0",
+               "id" => 3,
+               "result" => %{"stopReason" => "refusal"}
+             }
 
       failed = hd(notifications)
       assert failed["params"]["update"]["status"] == "failed"
@@ -180,14 +199,16 @@ defmodule AshAcp.PermissionTest do
                  "content" => %{"type" => "text", "text" => "Permission denied"}
                }
              ]
+
+      assert Enum.count(notifications) == 1
     end
 
-    test "client cancellation of the permission request is treated as denial" do
+    test "client cancellation of the permission request completes the prompt refused" do
       FakeHost.set_permission_mode({:pending, "approval-ref-4"})
       {_, _, state} = session_new()
-      {_, _, state} = publish_prompt(state)
+      {nil, _, state} = publish_prompt(state)
 
-      {nil, notifications, _} =
+      {response, notifications, _} =
         Server.handle_message(
           %{
             "jsonrpc" => "2.0",
@@ -197,7 +218,23 @@ defmodule AshAcp.PermissionTest do
           state
         )
 
+      assert response == %{
+               "jsonrpc" => "2.0",
+               "id" => 3,
+               "result" => %{"stopReason" => "refusal"}
+             }
+
       assert hd(notifications)["params"]["update"]["status"] == "failed"
+    end
+
+    test "a second prompt while the permission is pending is refused as in-flight" do
+      FakeHost.set_permission_mode({:pending, "approval-ref-5"})
+      {_, _, state} = session_new()
+      {nil, _, state} = publish_prompt(state)
+
+      {response, [], _} = publish_prompt(state)
+
+      assert %{"error" => %{"code" => -32600}} = response
     end
 
     test "hosts without resolve/3 get the default outcome mapping" do
@@ -239,8 +276,9 @@ defmodule AshAcp.PermissionTest do
 
       assert outbound["id"] == "srv-1"
 
-      # default resolve: allow_once → {:approved, nil} → the action runs
-      {nil, notifications, _} =
+      # default resolve: allow_once → {:approved, nil} → the action runs and
+      # the open prompt completes with end_turn
+      {response, notifications, _} =
         Server.handle_message(
           %{
             "jsonrpc" => "2.0",
@@ -249,6 +287,12 @@ defmodule AshAcp.PermissionTest do
           },
           state
         )
+
+      assert response == %{
+               "jsonrpc" => "2.0",
+               "id" => 3,
+               "result" => %{"stopReason" => "end_turn"}
+             }
 
       chunk =
         Enum.find(
@@ -268,7 +312,7 @@ defmodule AshAcp.PermissionTest do
       FakeHost.set_permission_mode({:approved, nil})
       {_, _, state} = session_new()
 
-      {response, [outbound], _} =
+      {response, [outbound], state} =
         Server.handle_message(
           %{
             "jsonrpc" => "2.0",
@@ -282,8 +326,10 @@ defmodule AshAcp.PermissionTest do
           state
         )
 
-      # not an error — a permission request
-      assert response["result"] == %{"stopReason" => "end_turn"}
+      # not an error — a permission request, and the turn stays open
+      # (no prompt response until the client resolves)
+      assert response == nil
+      assert state.in_flight == %{"sess-1" => 3}
       assert outbound["method"] == "session/request_permission"
       assert outbound["params"]["toolCall"]["title"] == "Restricted op"
     end
@@ -376,8 +422,8 @@ defmodule AshAcp.PermissionTest do
 
       {response, [outbound], state} = publish_prompt(state)
 
-      # the pending flow answers the prompt with end_turn at request time
-      assert response["result"] == %{"stopReason" => "end_turn"}
+      # the turn stays open: no prompt response until the client resolves
+      assert response == nil
       assert outbound["id"] == "srv-1"
 
       log =
