@@ -11,3 +11,6 @@ erl_crash.dump
 .elixir_ls/
 /.elixir-tools/
 .elixir-tools/
+
+# local debug artifacts
+err.log
