@@ -4,6 +4,33 @@
 
 # Changelog
 
+## 0.1.1 (2026-10-06)
+
+Live-verification hardening.
+
+* Read actions are dispatched as reads: `Ash.Query.for_read` + `Ash.read/2`
+  with the session actor and `authorize?: true`; results stream as a
+  `session/update` carrying the first 50 rows plus the total count.
+  `tenant:` on the action spec passes through to Ash. `:create`/`:update`/
+  `:destroy` answer with a `-32603` wire error instead of crashing.
+* `handle_message/2` never raises: seam crashes become `-32603` plus a
+  `Logger.error` with the stacktrace.
+* Contract-violating `AshAcp.PermissionRequest.request/3` / `resolve/3`
+  returns fail the affected prompt with `-32603` and log the misbehaving
+  module (previously a bare `:approved` left the turn silently unresolved).
+* `AshAcp.Authenticator` (optional): `authenticate/1` gates
+  `initialize`/`session/new`/`session/load` and its actor becomes the
+  session's actor; `{:error, _}` rejects with `-32000`.
+* `AshAcp.Plug` requires `secret_key_base` and a signed
+  `x-acp-connection` token (`Plug.Crypto.MessageVerifier`); invalid tokens
+  get `401`.
+* stdio: `run_stdio/1` diverts logger output and the group leader to
+  stderr — stdout carries nothing but ndjson.
+* A2UI payloads are carried under `update._meta.a2ui` (`update.surface`
+  kept as a deprecated alias for one release).
+* Golden fixtures validate against the vendored ACP v1 schema
+  (`priv/acp_schema/`, ex_json_schema).
+
 ## 0.1.0 (2026-10-06)
 
 Initial release.

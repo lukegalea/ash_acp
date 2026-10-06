@@ -38,7 +38,8 @@ shapes everything else — **no second authorization model**:
 | Permission request (`session/request_permission`) | the host's approval resource (ADR 0015), via `AshAcp.PermissionRequest` |
 | `session/update` — transcript chunks | the session resource's messages, replayed and appended through the store |
 | `session/update` — `availableCommands` | `Ash.can?/3` pruned action surface (`AshAcp.AvailableActions`) |
-| `session/update` — `surface` | opaque A2UI descriptors from `AshAcp.SurfaceProvider`, carried verbatim — never generated or re-defined here |
+| `session/update` — `_meta.a2ui` | opaque A2UI descriptors from `AshAcp.SurfaceProvider`, carried verbatim — never generated or re-defined here (`update.surface` remains as a deprecated alias for one release) |
+| `session/update` — rows | read actions stream bounded rows (first 50) + total count as a `session/update`; `tenant:` on the action spec passes through to Ash |
 | `session/update` — pending approvals | `tool_call` updates with `status: "pending"`, bound to the approval resource record |
 
 The long-form mapping table lives in the host repo's documentation area
@@ -53,7 +54,8 @@ Four behaviours, all host-implemented; the library ships none of them:
 | `AshAcp.SessionStore` | `create/1, load/1, append_message/3, close/1` | sessions backed by the host's own resource |
 | `AshAcp.PromptTarget` | `resolve/3` | prompt text → Ash action + inputs |
 | `AshAcp.PermissionRequest` | `request/3` (+ optional `resolve/3`) | approvals mapped onto the host approval resource |
-| `AshAcp.SurfaceProvider` (optional) | `surface/2` | A2UI surface descriptors carried under `update.surface` |
+| `AshAcp.Authenticator` (optional) | `authenticate/1` | `{:ok, actor}` on `initialize` / `session/new` / `session/load`; the actor becomes the session's actor; `{:error, _}` rejects with `-32000`. Unconfigured, the server must run behind a trusted boundary only |
+| `AshAcp.SurfaceProvider` (optional) | `surface/2` | A2UI surface descriptors carried under `update._meta.a2ui` |
 
 Configure in application env:
 
@@ -79,12 +81,14 @@ $ mix ash_acp.stdio         # or the mix task in dev
 (uses the Plug the host already has):
 
 ```elixir
-forward "/acp", to: AshAcp.Plug
+forward "/acp", to: AshAcp.Plug, init_opts: [secret_key_base: secret]
 ```
 
 POST bodies carry ndjson JSON-RPC; responses and notifications come back as
-ndjson lines. State is keyed by the `x-acp-connection` header (see
-`AshAcp.Plug` moduledoc for the model and its limits).
+ndjson lines. The `x-acp-connection` header must carry a token minted with
+`AshAcp.Plug.connection_token/2` (signed with the secret); unsigned or
+invalid tokens get `401`, and the token names the connection's state — see
+`AshAcp.Plug` moduledoc.
 
 ## Protocol pin
 
@@ -92,7 +96,16 @@ ndjson lines. State is keyed by the `x-acp-connection` header (see
 `protocolVersion` `1`). `initialize` echoes a matching client version or
 answers with this pin, and the golden fixtures in `priv/acp_fixtures/` assert
 the exact wire output of every flow, including error taxonomy (`-32700`,
-`-32601`, `-32602`), so a protocol drift cannot merge silently.
+`-32601`, `-32602`), and validate against the vendored ACP v1 schema
+(`priv/acp_schema/`), so a protocol drift cannot merge silently.
+
+Two robustness guarantees: `handle_message/2` never raises (a crash in any
+seam becomes a `-32603` for the offending request plus a `Logger.error` with
+the stacktrace), and contract-violating returns from
+`AshAcp.PermissionRequest.request/3` / `resolve/3` fail the affected prompt
+loudly instead of stranding the client. On stdio, `run_stdio/1` diverts
+logger output and the group leader to stderr — stdout carries nothing but
+ndjson.
 
 ## What is deliberately not here
 

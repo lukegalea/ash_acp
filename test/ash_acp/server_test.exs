@@ -11,6 +11,8 @@ defmodule AshAcp.ServerTest do
   """
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias AshAcp.Server
 
   setup do
@@ -154,6 +156,7 @@ defmodule AshAcp.ServerTest do
            ] = update["availableCommands"]
 
     assert update["surface"] == %{"type" => "list", "title" => "Notes"}
+    assert update["_meta"]["a2ui"] == %{"type" => "list", "title" => "Notes"}
     assert completed_tool_call["params"]["update"]["status"] == "completed"
 
     # in-flight bookkeeping cleared; transcript recorded in the host store
@@ -428,5 +431,150 @@ defmodule AshAcp.ServerTest do
 
   defp update_type(notification, type) do
     notification["params"]["update"]["sessionUpdate"] == type
+  end
+
+  # == read actions (the primary E3 surface) =================================
+
+  describe "read action dispatch" do
+    setup do
+      FakeHost.set_notes([
+        %FakeHost.Note{id: "n-1", title: "alpha", body: "first"},
+        %FakeHost.Note{id: "n-2", title: "beta", body: "second"},
+        %FakeHost.Note{id: "n-3", title: "gamma", body: "third"}
+      ])
+
+      FakeHost.set_prompt_mode({:ok, :list_notes})
+      :ok
+    end
+
+    test "a read prompt streams bounded rows plus total count, then ends the turn" do
+      {_, _, state} = session_new()
+
+      {response, notifications, _} = prompt(state)
+
+      assert response["result"] == %{"stopReason" => "end_turn"}
+
+      assert [
+               _tool_call,
+               rows_update,
+               %{"params" => %{"update" => %{"sessionUpdate" => "available_commands_update"}}},
+               _completed
+             ] = notifications
+
+      chunk = rows_update["params"]["update"]["content"]["text"] |> Jason.decode!()
+      assert chunk["count"] == 3
+
+      # rows are string-keyed public attributes only (id, title, body)
+      assert Enum.all?(chunk["rows"], fn row ->
+               Map.keys(row) |> Enum.sort() == ["body", "id", "title"]
+             end)
+
+      assert %{"id" => "n-1", "title" => "alpha", "body" => "first"} in chunk["rows"]
+    end
+
+    test "the row cap bounds output while the count reflects the total" do
+      FakeHost.set_notes(
+        for i <- 1..55 do
+          %FakeHost.Note{id: "n-#{i}", title: "t#{i}", body: "b#{i}"}
+        end
+      )
+
+      {_, _, state} = session_new()
+
+      {response, notifications, _} = prompt(state)
+
+      assert response["result"] == %{"stopReason" => "end_turn"}
+      rows_update = Enum.find(notifications, &update_type(&1, "agent_message_chunk"))
+      chunk = rows_update["params"]["update"]["content"]["text"] |> Jason.decode!()
+
+      assert chunk["count"] == 55
+      assert length(chunk["rows"]) == 50
+    end
+
+    test "the transcript records the rows payload for session/load replay" do
+      {_, _, state} = session_new()
+      {_, _, _} = prompt(state)
+
+      {:ok, session} = FakeHost.SessionStore.load("sess-1")
+      assert [%{role: :user}, %{role: :agent, text: text}] = session.messages
+      assert %{"count" => 3, "rows" => rows} = Jason.decode!(text)
+      assert length(rows) == 3
+    end
+  end
+
+  describe "tenant passthrough" do
+    test "the action spec's tenant reaches the Ash read as query tenant" do
+      FakeHost.set_notes([%FakeHost.Note{id: "n-1", title: "a", body: "b"}])
+      FakeHost.set_tenant_probe(self())
+      FakeHost.set_prompt_mode({:ok, :tenant_read})
+
+      {_, _, state} = session_new()
+
+      {response, _, _} = prompt(state)
+
+      assert response["result"] == %{"stopReason" => "end_turn"}
+      assert_received {:tenant, "acme"}
+    end
+  end
+
+  describe "unsupported action types are wire errors" do
+    test ":create answers the prompt with -32603 instead of crashing" do
+      FakeHost.set_prompt_mode({:ok, :create_note})
+      {_, _, state} = session_new()
+
+      {response, notifications, _} = prompt(state)
+
+      assert %{"id" => 3, "error" => %{"code" => -32603, "message" => "unsupported action type"}} =
+               response
+
+      assert response["error"]["data"]["actionType"] == ":create"
+
+      failed = hd(notifications)
+      assert failed["params"]["update"]["status"] == "failed"
+    end
+  end
+
+  describe "handle_message never raises" do
+    defmodule ExplodingPromptTarget do
+      @moduledoc false
+      @behaviour AshAcp.PromptTarget
+
+      def resolve(_session_id, _text, _ctx), do: raise("prompt target blew up")
+    end
+
+    test "a seam crash becomes a -32603 response with a logged stacktrace" do
+      FakeHost.set_prompt_mode({:ok, :summarize})
+
+      log =
+        capture_log(fn ->
+          # a session cached from an earlier message, so the prompt reaches
+          # the target instead of failing session lookup
+          {_, _, state} = session_new()
+
+          exploding_state = %{
+            Server.new(FakeHost.config(prompt_target: ExplodingPromptTarget))
+            | sessions: state.sessions
+          }
+
+          {response, [], _state} =
+            Server.handle_message(
+              %{
+                "jsonrpc" => "2.0",
+                "id" => 7,
+                "method" => "session/prompt",
+                "params" => %{
+                  "sessionId" => "sess-1",
+                  "prompt" => [%{"type" => "text", "text" => "x"}]
+                }
+              },
+              exploding_state
+            )
+
+          assert %{"id" => 7, "error" => %{"code" => -32603}} = response
+          assert response["error"]["data"]["reason"] =~ "blew up"
+        end)
+
+      assert log =~ "handle_message/2 crashed"
+    end
   end
 end

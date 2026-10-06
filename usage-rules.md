@@ -49,8 +49,15 @@ data on the host's approval resource, never an authorization authority.
 ## Rules of thumb
 
 * **Pure core, thin transports.** `AshAcp.Server.handle_message/2` does no
-  IO. If a change needs the Endpoint or Plug to make a protocol decision,
-  the decision belongs in the Server.
+  IO — and never raises: any seam crash or contract violation becomes a
+  `-32603` for the affected request plus a `Logger.error`. If a change needs
+  the Endpoint or Plug to make a protocol decision, the decision belongs in
+  the Server.
+* **Seam returns are contracts.** `request/3` must return
+  `{:approved, _} | {:denied} | {:pending, _}`; `resolve/3` must return
+  `{:approved, _} | {:denied}`. Anything else fails the affected prompt with
+  `-32603` and logs the misbehaving module — a bare `:approved` is the bug
+  that hung a live client once; it will never pass silently again.
 * **Wire shapes follow the schema.** Field names on the wire are the ACP
   schema's (`availableCommands`, `sessionId`, `stopReason`); Elixir-side
   names may read naturally (`available_actions`). Do not invent new

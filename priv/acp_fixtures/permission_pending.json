@@ -113,6 +113,12 @@
       "params": {
         "sessionId": "sess-1",
         "update": {
+          "_meta": {
+            "a2ui": {
+              "title": "Notes",
+              "type": "list"
+            }
+          },
           "availableCommands": [
             {
               "description": "Summarize the given text",

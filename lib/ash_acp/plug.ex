@@ -11,24 +11,19 @@ if Code.ensure_loaded?(Plug.Conn) do
 
     This exists so a host Phoenix endpoint can expose ACP over HTTP without
     this library growing a web-server dependency: the host already has Plug;
-    this module only uses `Plug.Conn`. Mount it directly:
+    this module only uses `Plug.Conn`. Mount it with a signing secret:
 
-        forward "/acp", to: AshAcp.Plug
+        forward "/acp", to: AshAcp.Plug, init_opts: [secret_key_base: secret]
 
-    or with overrides:
+    ## Signed connections
 
-        forward "/acp", to: AshAcp.Plug, init_opts: [config: [...], store: MyApp.StateStore]
-
-    ## State
-
-    ACP is stateful per connection. HTTP is not. The Plug closes the gap with
-    a small state registry keyed by the `x-acp-connection` request header (or
-    `"default"` when absent), persisted in a public ETS table so subsequent
-    POSTs on the same connection share the server's session cache, pending
-    permission requests and id counters. Hosts that need their own story —
-    e.g. a database or `:persistent_term` — pass `store: {module, fun, args}`
-    returning `%{get: loader, put: storer}` closures, or run one Plug process
-    per connection.
+    The header `x-acp-connection` must carry a token minted with
+    `connection_token/2` (`Plug.Crypto.MessageVerifier` over the state key,
+    signed with `secret_key_base`) — typically rendered into the operator
+    console by the host. Unsigned, tampered or missing tokens get `401`; a
+    valid token maps to the connection's ETS state, so the client can never
+    address another connection's state by guessing a header. Hosts that need
+    a different story pass `store: {get_fun, put_fun}`.
 
     Within one POST body, messages are processed strictly in order, so a
     whole `initialize` → `session/new` → `session/prompt` sequence can ride a
@@ -49,16 +44,54 @@ if Code.ensure_loaded?(Plug.Conn) do
 
     @connection_header "x-acp-connection"
     @content_type "application/x-ndjson"
-    @default_connection "default"
 
     @impl true
     def init(opts), do: opts
 
     @impl true
-    def call(%Plug.Conn{method: method} = conn, opts) when method in ["POST"] do
+    def call(%Plug.Conn{method: "POST"} = conn, opts) do
+      secret = Keyword.get(opts, :secret_key_base)
+
+      unless is_binary(secret) and byte_size(secret) > 0 do
+        raise ArgumentError,
+              "AshAcp.Plug requires a non-empty :secret_key_base option — " <>
+                "connection tokens are signed with it (Plug.Crypto.MessageVerifier)"
+      end
+
+      case connection_key(conn, secret) do
+        {:ok, key} ->
+          serve(conn, opts, key)
+
+        :error ->
+          conn
+          |> put_resp_content_type("application/json")
+          |> send_resp(
+            401,
+            Jason.encode!(%{"error" => "unauthorized: missing or invalid x-acp-connection token"})
+          )
+      end
+    end
+
+    def call(conn, _opts) do
+      conn
+      |> put_resp_content_type("application/json")
+      |> send_resp(405, Jason.encode!(%{"error" => "ACP over HTTP is POST with an ndjson body"}))
+    end
+
+    @doc """
+    Mints the signed token a client presents in the `x-acp-connection` header.
+    `key` is an opaque connection key of the host's choosing (e.g. a random
+    string per operator session); it names the server-state entry.
+    """
+    @spec connection_token(String.t(), String.t()) :: String.t()
+    def connection_token(key, secret_key_base)
+        when is_binary(key) and is_binary(secret_key_base) do
+      Plug.Crypto.MessageVerifier.sign(key, secret_key_base)
+    end
+
+    defp serve(conn, opts, key) do
       config = Keyword.get(opts, :config) || AshAcp.config()
       {get_state, put_state} = state_access(opts)
-      key = connection_key(conn)
 
       state = get_state.(key) || Server.new(config)
       {:ok, body, conn} = read_body(conn)
@@ -71,7 +104,7 @@ if Code.ensure_loaded?(Plug.Conn) do
             {[], st}
 
           trimmed, st ->
-            {w, st2} = handle(trimmed, st, config)
+            {w, st2} = handle(trimmed, st)
             {w, st2}
         end)
 
@@ -82,25 +115,19 @@ if Code.ensure_loaded?(Plug.Conn) do
       |> send_resp(200, IO.iodata_to_binary(Enum.map(wire, &JsonRpc.encode_line/1)))
     end
 
-    def call(conn, _opts) do
-      conn
-      |> put_resp_content_type("application/json")
-      |> send_resp(405, Jason.encode!(%{"error" => "ACP over HTTP is POST with an ndjson body"}))
+    defp connection_key(conn, secret) do
+      case get_req_header(conn, @connection_header) do
+        [token | _] -> Plug.Crypto.MessageVerifier.verify(token, secret)
+        [] -> :error
+      end
     end
 
-    defp handle(trimmed, state, _config) do
+    defp handle(trimmed, state) do
       Server.handle_line(trimmed, state)
     rescue
       e ->
         {[JsonRpc.error(nil, -32603, "internal error", %{"reason" => Exception.message(e)})],
          state}
-    end
-
-    defp connection_key(conn) do
-      case get_req_header(conn, @connection_header) do
-        [key | _] -> key
-        [] -> @default_connection
-      end
     end
 
     defp state_access(opts) do

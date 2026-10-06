@@ -30,6 +30,20 @@ defmodule FakeHost.Note do
   end
 
   actions do
+    read :list_notes do
+      description "List notes, newest first"
+
+      prepare fn query, _context ->
+        FakeHost.note_tenant_probe(query.tenant)
+        Ash.DataLayer.Simple.set_data(query, FakeHost.note_records())
+      end
+    end
+
+    create :create_note do
+      description "Create a note (not a v1 ACP surface)"
+      accept [:title, :body]
+    end
+
     action :summarize, :string do
       description "Summarize the given text"
       argument :text, :string, allow_nil?: false
@@ -91,9 +105,35 @@ defmodule FakeHost do
       {:prompt_mode, {:ok, :summarize}},
       {:permission_mode, {:approved, nil}},
       {:surface, %{"type" => "list", "title" => "Notes"}},
+      {:tenant_probe, nil},
       {:blocked, false},
       {:released, false}
     ])
+
+    :ok
+  end
+
+  @doc "Registers a pid that receives {:tenant, tenant} whenever a fake read runs."
+  def set_tenant_probe(pid), do: :ets.insert(@table, {:tenant_probe, pid})
+
+  @doc "Seeds the rows the fake `list_notes` read returns."
+  def set_notes(records), do: :ets.insert(@table, {:note_records, records})
+
+  @doc false
+  def note_records do
+    case :ets.lookup(@table, :note_records) do
+      [{:note_records, records}] -> records
+      _ -> []
+    end
+  end
+
+  @doc false
+  def note_tenant_probe(tenant) do
+    case :ets.lookup(@table, :tenant_probe) do
+      [{:tenant_probe, nil}] -> :ok
+      [{:tenant_probe, pid}] when is_pid(pid) -> send(pid, {:tenant, tenant})
+      _ -> :ok
+    end
 
     :ok
   end
@@ -228,6 +268,34 @@ defmodule FakeHost do
              inputs: %{text: prompt_text},
              title: "Summarize",
              kind: :read
+           }}
+
+        {:ok, :list_notes} ->
+          {:ok,
+           %{
+             resource: FakeHost.Note,
+             action: :list_notes,
+             inputs: %{},
+             title: "List notes"
+           }}
+
+        {:ok, :tenant_read} ->
+          {:ok,
+           %{
+             resource: FakeHost.Note,
+             action: :list_notes,
+             inputs: %{},
+             title: "List notes (tenanted)",
+             tenant: "acme"
+           }}
+
+        {:ok, :create_note} ->
+          {:ok,
+           %{
+             resource: FakeHost.Note,
+             action: :create_note,
+             inputs: %{title: "x"},
+             title: "Create note"
            }}
 
         {:ok, :publish} ->

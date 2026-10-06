@@ -17,6 +17,11 @@ defmodule AshAcp.Endpoint do
   2. hand each to the pure server,
   3. write what comes back.
 
+  **stdout carries nothing but ndjson.** `run_stdio/1` diverts the default
+  logger handler and its process tree's group leader to stderr before the
+  loop starts, so host logging (including the loud seam-failure and crash
+  logs from `AshAcp.Server`) can never interleave with the wire stream.
+
   ## Cancellation
 
   `session/prompt` runs in an unlinked, monitored process so the connection
@@ -46,6 +51,8 @@ defmodule AshAcp.Endpoint do
   """
   @spec run_stdio(keyword()) :: :ok
   def run_stdio(opts \\ []) do
+    keep_stdout_pure()
+
     device = Keyword.get(opts, :device, :standard_io)
     config = Keyword.get(opts, :config) || AshAcp.config()
     parent = self()
@@ -56,6 +63,28 @@ defmodule AshAcp.Endpoint do
       end)
 
     loop(Server.new(config), reader, device)
+  end
+
+  # stdout is the ACP wire. Logger's default handler writes to stdout, and
+  # seam callbacks (host code) may log or write to the group leader — both
+  # would corrupt the ndjson stream mid-message. Divert the default logger
+  # handler and this process tree's group leader to stderr, so stdout carries
+  # nothing but ndjson.
+  defp keep_stdout_pure do
+    try do
+      :logger.update_handler_config(:default, :set, %{config: %{type: :standard_error}})
+    rescue
+      _ -> :ok
+    catch
+      _, _ -> :ok
+    end
+
+    case Process.whereis(:standard_error) do
+      pid when is_pid(pid) -> Process.group_leader(self(), pid)
+      _ -> :ok
+    end
+
+    :ok
   end
 
   defp read_lines(device, parent) do

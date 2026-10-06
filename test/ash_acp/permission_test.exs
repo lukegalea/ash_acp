@@ -17,12 +17,12 @@ defmodule AshAcp.PermissionTest do
     :ok
   end
 
-  def new_state, do: Server.new(FakeHost.config())
+  def new_state(config_overrides \\ []), do: Server.new(FakeHost.config(config_overrides))
 
-  def session_new do
+  def session_new(config_overrides \\ []) do
     Server.handle_message(
       %{"jsonrpc" => "2.0", "id" => 2, "method" => "session/new", "params" => %{"cwd" => "/tmp"}},
-      new_state()
+      new_state(config_overrides)
     )
   end
 
@@ -80,7 +80,14 @@ defmodule AshAcp.PermissionTest do
 
       update = hd(notifications)["params"]["update"]
       assert update["status"] == "failed"
-      assert [%{"text" => "Permission denied"}] = update["content"]
+
+      assert [
+               %{
+                 "type" => "content",
+                 "content" => %{"type" => "text", "text" => "Permission denied"}
+               }
+             ] =
+               update["content"]
 
       # nothing ran
       {:ok, session} = FakeHost.SessionStore.load("sess-1")
@@ -168,7 +175,10 @@ defmodule AshAcp.PermissionTest do
       assert failed["params"]["update"]["status"] == "failed"
 
       assert failed["params"]["update"]["content"] == [
-               %{"type" => "text", "text" => "Permission denied"}
+               %{
+                 "type" => "content",
+                 "content" => %{"type" => "text", "text" => "Permission denied"}
+               }
              ]
     end
 
@@ -345,6 +355,90 @@ defmodule AshAcp.PermissionTest do
                session.messages,
                &(&1.role == :agent and String.contains?(&1.text, "restricted ok"))
              )
+    end
+  end
+
+  describe "contract violations fail loudly" do
+    import ExUnit.CaptureLog
+
+    test "resolve/3 returning a bare :approved answers the pending prompt with -32603" do
+      defmodule BareAtomResolve do
+        @moduledoc false
+        @behaviour AshAcp.PermissionRequest
+
+        # exactly the host-side bug that hung a live client
+        def request(_s, _a, _i), do: {:pending, "ref"}
+        def resolve(_ref, _outcome, _session), do: :approved
+      end
+
+      FakeHost.set_prompt_mode({:ok, :publish})
+      {_, _, state} = session_new(permission_request: BareAtomResolve)
+
+      {response, [outbound], state} = publish_prompt(state)
+
+      # the pending flow answers the prompt with end_turn at request time
+      assert response["result"] == %{"stopReason" => "end_turn"}
+      assert outbound["id"] == "srv-1"
+
+      log =
+        capture_log(fn ->
+          {response, _notifications, _state} =
+            Server.handle_message(
+              %{
+                "jsonrpc" => "2.0",
+                "id" => "srv-1",
+                "result" => %{"outcome" => %{"outcome" => "selected", "optionId" => "allow_once"}}
+              },
+              state
+            )
+
+          # addressed to the *prompt's* request id — the client is waiting on it
+          assert %{"id" => 3, "error" => %{"code" => -32603}} = response
+          assert response["error"]["data"]["reason"] =~ "BareAtomResolve.resolve/3"
+        end)
+
+      assert log =~ "BareAtomResolve"
+      assert log =~ "-32603"
+    end
+
+    test "request/3 returning {:error, _} answers the prompt with -32603" do
+      defmodule ErrorRequest do
+        @moduledoc false
+        @behaviour AshAcp.PermissionRequest
+
+        def request(_s, _a, _i), do: {:error, :approval_backend_down}
+      end
+
+      FakeHost.set_prompt_mode({:ok, :publish})
+      {_, _, state} = session_new(permission_request: ErrorRequest)
+
+      log =
+        capture_log(fn ->
+          {response, notifications, state} = publish_prompt(state)
+
+          assert %{"id" => 3, "error" => %{"code" => -32603}} = response
+          assert response["error"]["data"]["reason"] =~ "ErrorRequest.request/3"
+          assert notifications == []
+          assert state.in_flight == %{}
+        end)
+
+      assert log =~ "ErrorRequest"
+      assert log =~ "{:error, :approval_backend_down}"
+    end
+
+    test "request/3 returning junk is treated as a violation too" do
+      defmodule JunkRequest do
+        @moduledoc false
+        @behaviour AshAcp.PermissionRequest
+
+        def request(_s, _a, _i), do: :nope
+      end
+
+      FakeHost.set_prompt_mode({:ok, :publish})
+      {_, _, state} = session_new(permission_request: JunkRequest)
+
+      {response, [], _} = publish_prompt(state)
+      assert %{"id" => 3, "error" => %{"code" => -32603}} = response
     end
   end
 end

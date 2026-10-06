@@ -82,7 +82,8 @@ defmodule AshAcp do
     :prompt_target,
     :permission_request,
     :surface_provider,
-    :agent_info
+    :agent_info,
+    :authenticate
   ]
 
   @doc """

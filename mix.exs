@@ -5,7 +5,7 @@
 defmodule AshAcp.MixProject do
   use Mix.Project
 
-  @version "0.1.0"
+  @version "0.1.1"
   @source_url "https://github.com/lukegalea/ash_acp"
 
   def project do
@@ -51,7 +51,11 @@ defmodule AshAcp.MixProject do
       {:plug, "~> 1.16", optional: true},
       # Test-only: backs the `Ash.Policy.Authorizer` checks in the fake host
       # resources the lifecycle and permission tests run against.
-      {:simple_sat, "~> 0.1", only: [:dev, :test]}
+      {:simple_sat, "~> 0.1", only: [:dev, :test]},
+      # Test-only: validates the golden wire fixtures (and a constructed
+      # session/update) against the vendored ACP v1 JSON schema, so protocol
+      # drift cannot merge silently.
+      {:ex_json_schema, "~> 0.10", only: [:dev, :test]}
     ]
   end
 

@@ -42,8 +42,11 @@
         "update": {
           "content": [
             {
-              "text": "Permission denied",
-              "type": "text"
+              "content": {
+                "text": "Permission denied",
+                "type": "text"
+              },
+              "type": "content"
             }
           ],
           "sessionUpdate": "tool_call_update",
