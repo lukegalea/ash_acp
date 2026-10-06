@@ -4,6 +4,16 @@
 
 # Changelog
 
+## 0.1.2 (2026-10-06)
+
+* Decimals serialize as exact strings (`Decimal.to_string/1`) — never as
+  floats, which silently change money values (iron law #04). Money-shaped
+  structs (ash_money) serialize as `{"amount": string, "currency": string}`.
+* `session/load` is owner-checked: with `AshAcp.Authenticator` configured,
+  a session whose stored actor differs from the authenticated actor is
+  rejected with `-32002` ("Resource not found"). `session/new` passes the
+  authenticated actor to the store under `"actor"` in `init`.
+
 ## 0.1.1 (2026-10-06)
 
 Live-verification hardening.

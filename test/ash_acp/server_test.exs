@@ -429,6 +429,96 @@ defmodule AshAcp.ServerTest do
     )
   end
 
+  describe "session/load ownership" do
+    test "an authenticated actor cannot load another actor's session" do
+      FakeHost.set_auth_actor(:actor_a)
+      config = FakeHost.config(authenticate: FakeHost.Authenticator)
+
+      {_, _, _} =
+        Server.handle_message(
+          %{
+            "jsonrpc" => "2.0",
+            "id" => 2,
+            "method" => "session/new",
+            "params" => %{"cwd" => "/tmp"}
+          },
+          Server.new(config)
+        )
+
+      # actor B tries to load actor A's session
+      FakeHost.set_auth_actor(:actor_b)
+
+      {response, [], _} =
+        Server.handle_message(
+          %{
+            "jsonrpc" => "2.0",
+            "id" => 4,
+            "method" => "session/load",
+            "params" => %{"sessionId" => "sess-1", "cwd" => "/tmp"}
+          },
+          Server.new(config)
+        )
+
+      assert %{"id" => 4, "error" => %{"code" => -32002, "data" => %{"reason" => reason}}} =
+               response
+
+      assert reason =~ "another actor"
+    end
+
+    test "the owning actor loads their session normally" do
+      FakeHost.set_auth_actor(:actor_a)
+      config = FakeHost.config(authenticate: FakeHost.Authenticator)
+
+      {_, _, _} =
+        Server.handle_message(
+          %{
+            "jsonrpc" => "2.0",
+            "id" => 2,
+            "method" => "session/new",
+            "params" => %{"cwd" => "/tmp"}
+          },
+          Server.new(config)
+        )
+
+      {:ok, session} = FakeHost.SessionStore.load("sess-1")
+      {:ok, _} = FakeHost.SessionStore.append_message(session, :user, "hello")
+
+      # still actor A, fresh connection state
+      {response, notifications, _} =
+        Server.handle_message(
+          %{
+            "jsonrpc" => "2.0",
+            "id" => 4,
+            "method" => "session/load",
+            "params" => %{"sessionId" => "sess-1", "cwd" => "/tmp"}
+          },
+          Server.new(config)
+        )
+
+      assert response["result"] == %{}
+
+      assert [%{"params" => %{"update" => %{"sessionUpdate" => "user_message_chunk"}}}] =
+               notifications
+    end
+
+    test "without an authenticator the check is skipped (trusted boundary rule)" do
+      {_, _, _} = session_new()
+
+      {response, [], _} =
+        Server.handle_message(
+          %{
+            "jsonrpc" => "2.0",
+            "id" => 4,
+            "method" => "session/load",
+            "params" => %{"sessionId" => "sess-1", "cwd" => "/tmp"}
+          },
+          new_state()
+        )
+
+      assert response["result"] == %{}
+    end
+  end
+
   defp update_type(notification, type) do
     notification["params"]["update"]["sessionUpdate"] == type
   end
@@ -438,11 +528,33 @@ defmodule AshAcp.ServerTest do
   describe "read action dispatch" do
     setup do
       ts = ~U[2026-10-06 08:30:15.123456Z]
+      amount = Decimal.new("1.50")
 
       FakeHost.set_notes([
-        %FakeHost.Note{id: "n-1", title: "alpha", body: "first", inserted_at: ts, updated_at: ts},
-        %FakeHost.Note{id: "n-2", title: "beta", body: "second", inserted_at: ts, updated_at: ts},
-        %FakeHost.Note{id: "n-3", title: "gamma", body: "third", inserted_at: ts, updated_at: ts}
+        %FakeHost.Note{
+          id: "n-1",
+          title: "alpha",
+          body: "first",
+          amount: amount,
+          inserted_at: ts,
+          updated_at: ts
+        },
+        %FakeHost.Note{
+          id: "n-2",
+          title: "beta",
+          body: "second",
+          amount: amount,
+          inserted_at: ts,
+          updated_at: ts
+        },
+        %FakeHost.Note{
+          id: "n-3",
+          title: "gamma",
+          body: "third",
+          amount: amount,
+          inserted_at: ts,
+          updated_at: ts
+        }
       ])
 
       FakeHost.set_prompt_mode({:ok, :list_notes})
@@ -466,10 +578,10 @@ defmodule AshAcp.ServerTest do
       chunk = rows_update["params"]["update"]["content"]["text"] |> Jason.decode!()
       assert chunk["count"] == 3
 
-      # rows are string-keyed public attributes only (id, title, body,
-      # inserted_at, updated_at)
+      # rows are string-keyed public attributes only
       assert Enum.all?(chunk["rows"], fn row ->
                Map.keys(row) |> Enum.sort() == [
+                 "amount",
                  "body",
                  "id",
                  "inserted_at",
@@ -482,6 +594,7 @@ defmodule AshAcp.ServerTest do
                "id" => "n-1",
                "title" => "alpha",
                "body" => "first",
+               "amount" => "1.50",
                "inserted_at" => "2026-10-06T08:30:15.123456Z",
                "updated_at" => "2026-10-06T08:30:15.123456Z"
              } in chunk["rows"]
@@ -524,6 +637,7 @@ defmodule AshAcp.ServerTest do
           id: "n-ts",
           title: "dated",
           body: "with timestamps",
+          amount: Decimal.new("12.34"),
           inserted_at: ~U[2026-10-06 08:30:15.123456Z],
           updated_at: ~U[2026-10-06 09:45:00.000000Z]
         }
@@ -542,12 +656,51 @@ defmodule AshAcp.ServerTest do
       assert %{"count" => 1, "rows" => [row]} = Jason.decode!(text)
       assert row["inserted_at"] == DateTime.to_iso8601(~U[2026-10-06 08:30:15.123456Z])
       assert row["updated_at"] == DateTime.to_iso8601(~U[2026-10-06 09:45:00.000000Z])
+      assert row["amount"] == "12.34"
+    end
+
+    test "decimals serialize as exact strings, never floats" do
+      # 20 significant digits: a float round-trip would silently change the
+      # value (iron law #04 — money), so the wire must carry the string
+      exact = Decimal.new("12345678901234567890.123456789")
+
+      FakeHost.set_notes([
+        %FakeHost.Note{id: "n-dec", title: "big", body: "exact", amount: exact}
+      ])
+
+      {_, _, state} = session_new()
+      {_, notifications, _} = prompt(state)
+
+      rows_update = Enum.find(notifications, &update_type(&1, "agent_message_chunk"))
+
+      assert %{"rows" => [row]} =
+               Jason.decode!(rows_update["params"]["update"]["content"]["text"])
+
+      assert row["amount"] == "12345678901234567890.123456789"
+      assert is_binary(row["amount"])
+    end
+
+    test "money-shaped structs serialize as amount-string plus currency" do
+      # duck-typed ash_money: any struct with amount + currency
+      money = %{
+        __struct__: AshMoneyTestMoney,
+        amount: Decimal.new("1.99"),
+        currency: :USD
+      }
+
+      assert AshAcp.Server.stringify_value(money) == %{"amount" => "1.99", "currency" => "USD"}
+
+      assert AshAcp.Server.stringify_value(Decimal.new("12345678901234567890.5")) ==
+               "12345678901234567890.5"
     end
   end
 
   describe "tenant passthrough" do
     test "the action spec's tenant reaches the Ash read as query tenant" do
-      FakeHost.set_notes([%FakeHost.Note{id: "n-1", title: "a", body: "b"}])
+      FakeHost.set_notes([
+        %FakeHost.Note{id: "n-1", title: "a", body: "b", amount: Decimal.new("2.25")}
+      ])
+
       FakeHost.set_tenant_probe(self())
       FakeHost.set_prompt_mode({:ok, :tenant_read})
 

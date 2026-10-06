@@ -28,6 +28,10 @@ defmodule FakeHost.Note do
     attribute :title, :string, public?: true
     attribute :body, :string, public?: true
 
+    # money-adjacent columns must serialize as STRINGS — a float round-trip
+    # silently changes values (iron law #04)
+    attribute :amount, :decimal, public?: true
+
     # every platform table carries these; they must serialize to ISO8601
     # on the wire (the DateTime row-serialization regression)
     create_timestamp :inserted_at, public?: true
@@ -111,6 +115,7 @@ defmodule FakeHost do
       {:permission_mode, {:approved, nil}},
       {:surface, %{"type" => "list", "title" => "Notes"}},
       {:tenant_probe, nil},
+      {:auth_actor, :operator},
       {:blocked, false},
       {:released, false}
     ])
@@ -222,7 +227,7 @@ defmodule FakeHost do
     def create(init) do
       session = %{
         session_id: FakeHost.next_session_id(),
-        actor: FakeHost.current_actor(),
+        actor: init["actor"] || FakeHost.current_actor(),
         cwd: init["cwd"],
         messages: []
       }
@@ -255,6 +260,25 @@ defmodule FakeHost do
   end
 
   def table, do: @table
+
+  # == AshAcp.Authenticator ==================================================
+
+  def set_auth_actor(actor), do: :ets.insert(@table, {:auth_actor, actor})
+
+  def current_auth_actor do
+    case :ets.lookup(@table, :auth_actor) do
+      [{:auth_actor, actor}] -> actor
+      _ -> :operator
+    end
+  end
+
+  defmodule Authenticator do
+    @moduledoc false
+    @behaviour AshAcp.Authenticator
+
+    @impl true
+    def authenticate(_params), do: {:ok, FakeHost.current_auth_actor()}
+  end
 
   # == AshAcp.PromptTarget ===================================================
 

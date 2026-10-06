@@ -19,7 +19,10 @@ defmodule AshAcp.SessionStore do
     and used to route `session/load`, `session/prompt` and `session/cancel`.
   * `actor` — the Ash actor every prompt action is executed with
     (`authorize?: true`). This is the *only* source of authorization
-    identity in the whole library; there is no second model.
+    identity in the whole library; there is no second model. When an
+    `AshAcp.Authenticator` is configured, `create/1` receives it under
+    `"actor"` in `init` — record it: `session/load` rejects loads by a
+    different authenticated actor with `-32002`.
   * `messages` — the transcript, a list of `%{role: :user | :agent, text: binary}`
     (extra keys allowed). Replayed as `session/update` chunks on
     `session/load` and appended through `append_message/3`.

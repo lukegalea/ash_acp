@@ -5,7 +5,7 @@
 defmodule AshAcp.MixProject do
   use Mix.Project
 
-  @version "0.1.1"
+  @version "0.1.2"
   @source_url "https://github.com/lukegalea/ash_acp"
 
   def project do
@@ -41,6 +41,8 @@ defmodule AshAcp.MixProject do
   defp deps do
     [
       {:ash, "~> 3.0"},
+      # server.ex serializes Decimal cells directly (as strings — money-safe)
+      {:decimal, "~> 3.0"},
       # Rides in via `ash`, but this library encodes and decodes every wire
       # message with it directly -- a transitive dependency the suite leans on
       # is one `mix deps.update` away from disappearing, so it is declared.

@@ -315,7 +315,10 @@ defmodule AshAcp.Server do
     init = %{
       "cwd" => params["cwd"],
       "mcpServers" => params["mcpServers"] || [],
-      "clientInfo" => params["clientInfo"]
+      "clientInfo" => params["clientInfo"],
+      # the authenticated actor, so the host store records the owner the
+      # ownership check on session/load compares against
+      "actor" => actor
     }
 
     case session_store!(state).create(init) do
@@ -347,21 +350,26 @@ defmodule AshAcp.Server do
     if is_binary(session_id) do
       case fetch_session(state, session_id) do
         {:ok, session, state} ->
-          session = put_actor(session, actor)
+          with :ok <- check_session_ownership(session, actor, message) do
+            session = put_actor(session, actor)
 
-          notifications =
-            Enum.map(transcript(session), fn %{role: role, text: text} ->
-              JsonRpc.notification("session/update", %{
-                "sessionId" => session_id,
-                "update" => %{
-                  "sessionUpdate" => chunk_type(role),
-                  "content" => %{"type" => "text", "text" => text}
-                }
-              })
-            end)
+            notifications =
+              Enum.map(transcript(session), fn %{role: role, text: text} ->
+                JsonRpc.notification("session/update", %{
+                  "sessionId" => session_id,
+                  "update" => %{
+                    "sessionUpdate" => chunk_type(role),
+                    "content" => %{"type" => "text", "text" => text}
+                  }
+                })
+              end)
 
-          {JsonRpc.response(message["id"], %{}), notifications,
-           %{state | sessions: Map.put(state.sessions, session_id, session)}}
+            {JsonRpc.response(message["id"], %{}), notifications,
+             %{state | sessions: Map.put(state.sessions, session_id, session)}}
+          else
+            {:error, response} ->
+              {response, [], state}
+          end
 
         {:error, reason} ->
           {session_not_found(message["id"], reason), [], state}
@@ -369,6 +377,24 @@ defmodule AshAcp.Server do
     else
       {JsonRpc.std_error(message["id"], -32602, %{"reason" => "sessionId (string) is required"}),
        [], state}
+    end
+  end
+
+  # Ownership: a session with an owner actor may only be loaded by the same
+  # authenticated actor — actor B loading actor A's session is "Resource not
+  # found" (-32002), never a transcript leak. Skipped when the connection has
+  # no identity (no `AshAcp.Authenticator` configured — the trusted-boundary
+  # rule) or when the stored session carries no owner.
+  defp check_session_ownership(session, actor, message) do
+    owner = actor_of(session)
+
+    if owner && actor && owner != actor do
+      {:error,
+       JsonRpc.error(message["id"], -32002, "Resource not found", %{
+         "reason" => "session belongs to another actor"
+       })}
+    else
+      :ok
     end
   end
 
@@ -920,18 +946,20 @@ defmodule AshAcp.Server do
 
   # Everything placed inside a wire payload must be Jason-encodable with
   # string keys. Host values arrive with atom keys and platform types, so:
-  # dates/times become ISO8601 strings, Decimals become floats (string when
-  # unrepresentable), unknown structs and non-encodable cells become inspect
-  # text — one exotic cell must never crash the turn.
+  # dates/times become ISO8601 strings, Decimals and money amounts stay
+  # STRINGS (a float round-trip silently changes money values — iron law
+  # #04), and unknown structs or non-encodable cells become inspect text —
+  # one exotic cell must never crash the turn.
   defp stringify(%Date{} = value), do: Date.to_iso8601(value)
   defp stringify(%DateTime{} = value), do: DateTime.to_iso8601(value)
   defp stringify(%NaiveDateTime{} = value), do: NaiveDateTime.to_iso8601(value)
   defp stringify(%Time{} = value), do: Time.to_iso8601(value)
 
-  defp stringify(%Decimal{} = value) do
-    Decimal.to_float(value)
-  rescue
-    _ -> Decimal.to_string(value)
+  defp stringify(%Decimal{} = value), do: Decimal.to_string(value)
+
+  # money-shaped structs (ash_money): amount-string + currency
+  defp stringify(%{amount: amount, currency: currency} = value) when is_struct(value) do
+    %{"amount" => stringify(amount), "currency" => to_string(currency)}
   end
 
   defp stringify(value) when is_struct(value), do: inspect(value)
@@ -944,6 +972,14 @@ defmodule AshAcp.Server do
 
   defp stringify(value) when is_list(value), do: Enum.map(value, &stringify/1)
   defp stringify(value), do: value
+
+  @doc """
+  Serializes one host value for the wire (see the wire-hygiene rules in the
+  module documentation). Exposed so hosts and tests can assert exactly what
+  a row cell, `rawInput` or approval payload will look like on the wire.
+  """
+  @spec stringify_value(term()) :: term()
+  def stringify_value(value), do: stringify(value)
 
   # == helpers ===============================================================
 
