@@ -74,20 +74,27 @@ defmodule AshAcp.Endpoint do
     loop(Server.new(config), reader, stdout)
   end
 
-  # stdout is the ACP wire. Only the default Logger handler is diverted (to
-  # stderr): the group leader is left strictly alone, because IO.read and
-  # IO.write on `:standard_io` resolve through it — diverting it breaks both
-  # reads (immediate EOF) and writes (:epipe).
+  # stdout is the ACP wire. The default Logger handler is replaced: removed
+  # and re-added as a logger_std_h writing to stderr at :error, so a chatty
+  # dev host (Ecto SQL debug, monitor noise) never reaches the wire and
+  # genuine errors land on stderr. Two landmines, both bisected live:
+  # `update_handler_config` silently no-ops under Elixir's Logger, and
+  # `type` cannot be changed on a started handler (:illegal_config_change) —
+  # hence remove + re-add. The group leader is left strictly alone, because
+  # IO.read and IO.write on `:standard_io` resolve through it — diverting it
+  # breaks both reads (immediate EOF) and writes (:epipe).
   defp keep_stdout_pure do
-    try do
-      :logger.update_handler_config(:default, :set, %{config: %{type: :standard_error}})
-    rescue
-      _ -> :ok
-    catch
-      _, _ -> :ok
-    end
+    :logger.remove_handler(:default)
+
+    :logger.add_handler(:default, :logger_std_h, %{
+      config: %{type: :standard_error, level: :error}
+    })
 
     :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
   end
 
   defp read_lines(device, parent) do
