@@ -1,0 +1,203 @@
+{
+  "description": "_a2ui/action: a plain action applies at once; a consequential one goes through the host's PermissionRequest, pends as session/request_permission, and the approved second handler call answers the extension request",
+  "expected": [
+    {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "result": {
+        "_meta": {
+          "ash": {
+            "extMethods": [
+              "_ash/surfaces/list",
+              "_ash/surface/open",
+              "_a2ui/action"
+            ],
+            "surfaces": [
+              {
+                "group": "Workspace",
+                "id": "notes",
+                "title": "Notes"
+              }
+            ]
+          }
+        },
+        "agentCapabilities": {
+          "_meta": {
+            "ash": {
+              "extMethods": [
+                "_ash/surfaces/list",
+                "_ash/surface/open",
+                "_a2ui/action"
+              ],
+              "surfaces": [
+                {
+                  "group": "Workspace",
+                  "id": "notes",
+                  "title": "Notes"
+                }
+              ]
+            }
+          },
+          "loadSession": true,
+          "mcpCapabilities": {
+            "http": false,
+            "sse": false
+          },
+          "promptCapabilities": {
+            "audio": false,
+            "embeddedContext": false,
+            "image": false
+          },
+          "sessionCapabilities": {
+            "list": {}
+          }
+        },
+        "agentInfo": {
+          "name": "fake_host",
+          "title": "Fake Host",
+          "version": "1.0.0"
+        },
+        "authMethods": [],
+        "protocolVersion": 1
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "sess-1",
+        "update": {
+          "_meta": {
+            "a2ui": {
+              "title": "Notes",
+              "type": "list"
+            }
+          },
+          "availableCommands": [
+            {
+              "description": "Summarize the given text",
+              "name": "FakeHost.Note.summarize"
+            },
+            {
+              "description": "Only actors may run this",
+              "name": "FakeHost.Note.restricted"
+            }
+          ],
+          "sessionUpdate": "available_commands_update"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "result": {
+        "sessionId": "sess-1"
+      }
+    },
+    {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "result": {
+        "a2ui": [
+          {
+            "updateDataModel": {
+              "path": "/ui/status",
+              "surfaceId": "notes",
+              "value": "refreshed"
+            },
+            "version": "v0.9.1"
+          }
+        ],
+        "outcome": "applied"
+      }
+    },
+    {
+      "id": "srv-1",
+      "jsonrpc": "2.0",
+      "method": "session/request_permission",
+      "params": {
+        "_meta": {
+          "requestRef": "approval-ref-1"
+        },
+        "options": [
+          {
+            "kind": "allow_once",
+            "name": "Allow once",
+            "optionId": "allow_once"
+          },
+          {
+            "kind": "allow_always",
+            "name": "Allow always",
+            "optionId": "allow_always"
+          },
+          {
+            "kind": "reject_once",
+            "name": "Reject once",
+            "optionId": "reject_once"
+          }
+        ],
+        "sessionId": "sess-1",
+        "toolCall": {
+          "kind": "execute",
+          "status": "pending",
+          "title": "Publish bulletin",
+          "toolCallId": "tc-1"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "sess-1",
+        "update": {
+          "content": {
+            "text": "Bulletin published: hello all",
+            "type": "text"
+          },
+          "sessionUpdate": "agent_message_chunk"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "sess-1",
+        "update": {
+          "sessionUpdate": "tool_call_update",
+          "status": "completed",
+          "toolCallId": "tc-1"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "jsonrpc": "2.0",
+      "result": {
+        "a2ui": [
+          {
+            "updateDataModel": {
+              "path": "/ui/status",
+              "surfaceId": "notes",
+              "value": "Bulletin published: hello all"
+            },
+            "version": "v0.9.1"
+          }
+        ],
+        "outcome": "applied"
+      }
+    }
+  ],
+  "input": [
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":1}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session/new\",\"params\":{\"cwd\":\"/home/operator\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"_a2ui/action\",\"params\":{\"sessionId\":\"sess-1\",\"surfaceId\":\"notes\",\"action\":{\"name\":\"refresh\",\"context\":{}}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"_a2ui/action\",\"params\":{\"sessionId\":\"sess-1\",\"surfaceId\":\"notes\",\"action\":{\"name\":\"publish\",\"sourceComponentId\":\"publish-btn\",\"context\":{\"text\":\"hello all\"}}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":\"srv-1\",\"result\":{\"outcome\":{\"outcome\":\"selected\",\"optionId\":\"allow_once\"}}}"
+  ],
+  "setup": {
+    "actor": "operator",
+    "permission": "pending"
+  }
+}

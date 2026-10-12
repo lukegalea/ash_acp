@@ -4,6 +4,39 @@
 
 # Changelog
 
+## 0.2.0 (2026-10-12)
+
+* **Extension methods.** `AshAcp.ExtMethods` (optional, `config :ash_acp,
+  ext_methods: ...`) routes `_`-prefixed JSON-RPC methods to the host with
+  the session's actor. Consequential calls return `{:request_permission,
+  spec}`: the host's `AshAcp.PermissionRequest` decides, a pending decision
+  becomes `session/request_permission`, and the handler answers once the
+  outcome is known. Advertised under `agentCapabilities._meta.ash`
+  (mirrored at the initialize result's `_meta.ash`). The shared `ash`
+  conventions (`_ash/surfaces/list`, `_ash/surface/open`, `_a2ui/action`)
+  are specified in `priv/acp_schema/ash_ext.json` and conformance-tested.
+* `available_commands_update` is sent right after `session/new` and after the
+  `session/load` transcript replay, not only at turn end. On `session/load`
+  it carries the session's last surface (`_meta.a2ui`); the provider is told
+  why it is asked (`meta.reason`: `:session_new | :session_load | :turn_end`).
+* `session/list` when the store exports the optional `list/1`, advertised as
+  `sessionCapabilities.list`; foreign sessions are dropped.
+* `AshAcp.Updates` — builders for `agent_message_chunk`,
+  `agent_thought_chunk`, `user_message_chunk`, `plan`,
+  `available_commands_update` and `session_info_update`.
+* Fix: `AshAcp.config/0` carries `candidate_actions` (default `[]`),
+  `ext_methods` and `authenticate`; previously the documented
+  `candidate_actions` was silently dropped.
+* Fix: the stdio log handler. `level` was passed inside `logger_std_h`'s own
+  config, which rejects it — the default handler was removed and never
+  re-added. It is now a handler key; `mix ash_acp.stdio` diverts logging
+  before the host boots. `AshAcp.Endpoint.keep_stdout_pure/0` is public.
+* Hardening: a prompt or extension call naming a session that is not cached
+  on the connection is loaded and refused (`-32002`) when it belongs to
+  another authenticated actor.
+* **Breaking:** the deprecated `update.surface` alias is gone; read
+  `update._meta.a2ui`.
+
 ## 0.1.2 (2026-10-06)
 
 * Decimals serialize as exact strings (`Decimal.to_string/1`) — never as

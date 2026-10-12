@@ -18,8 +18,8 @@ defmodule AshAcp.Endpoint do
   3. write what comes back.
 
   **stdout carries nothing but ndjson.** The default Logger handler is
-  diverted to stderr before the loop starts (the mix task suppresses the
-  handler entirely), so host logging — including the loud seam-failure and
+  diverted to stderr before the loop starts (`keep_stdout_pure/0`; the mix
+  task also does it before the host boots), so host logging — including the loud seam-failure and
   crash logs from `AshAcp.Server` — can never interleave with the wire
   stream. The group leader is deliberately untouched: IO on `:standard_io`
   resolves through it, and writes are instead routed through the raw `:user`
@@ -74,27 +74,42 @@ defmodule AshAcp.Endpoint do
     loop(Server.new(config), reader, stdout)
   end
 
-  # stdout is the ACP wire. The default Logger handler is replaced: removed
-  # and re-added as a logger_std_h writing to stderr at :error, so a chatty
-  # dev host (Ecto SQL debug, monitor noise) never reaches the wire and
-  # genuine errors land on stderr. Two landmines, both bisected live:
-  # `update_handler_config` silently no-ops under Elixir's Logger, and
-  # `type` cannot be changed on a started handler (:illegal_config_change) —
-  # hence remove + re-add. The group leader is left strictly alone, because
-  # IO.read and IO.write on `:standard_io` resolve through it — diverting it
-  # breaks both reads (immediate EOF) and writes (:epipe).
-  defp keep_stdout_pure do
-    :logger.remove_handler(:default)
+  @doc """
+  Makes stdout the ACP wire and nothing else: the `:default` logger handler
+  is replaced by a `logger_std_h` writing to **stderr** at level `:error`,
+  so a chatty host (Ecto SQL debug, monitor noise) never reaches the wire
+  and genuine errors still land on stderr. Idempotent; called by
+  `run_stdio/1` and, before the host boots, by `mix ash_acp.stdio`.
 
-    :logger.add_handler(:default, :logger_std_h, %{
-      config: %{type: :standard_error, level: :error}
-    })
+  Landmines, all bisected live: `update_handler_config` silently no-ops
+  under Elixir's Logger; `type` cannot be changed on a started handler
+  (`:illegal_config_change`) — hence remove + re-add; and `level` is a
+  *handler* option — inside `logger_std_h`'s own `config` it is rejected,
+  which used to leave the node with no default handler at all. The group
+  leader is left strictly alone: `IO.read`/`IO.write` on `:standard_io`
+  resolve through it, and diverting it breaks both (instant EOF, `:epipe`).
 
-    :ok
-  rescue
-    _ -> :ok
-  catch
-    _, _ -> :ok
+  Returns `:ok`, or `{:error, reason}` when the handler could not be added
+  (reported on stderr — never on the wire).
+  """
+  @spec keep_stdout_pure() :: :ok | {:error, term()}
+  def keep_stdout_pure do
+    _ = :logger.remove_handler(:default)
+
+    case :logger.add_handler(:default, :logger_std_h, stderr_handler_config()) do
+      :ok ->
+        :ok
+
+      {:error, reason} = error ->
+        IO.puts(:stderr, "ash_acp: could not install the stderr log handler: #{inspect(reason)}")
+        error
+    end
+  end
+
+  @doc false
+  @spec stderr_handler_config() :: map()
+  def stderr_handler_config do
+    %{level: :error, config: %{type: :standard_error}, formatter: Logger.default_formatter()}
   end
 
   defp read_lines(device, parent) do

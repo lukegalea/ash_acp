@@ -5,7 +5,39 @@
       "id": 1,
       "jsonrpc": "2.0",
       "result": {
+        "_meta": {
+          "ash": {
+            "extMethods": [
+              "_ash/surfaces/list",
+              "_ash/surface/open",
+              "_a2ui/action"
+            ],
+            "surfaces": [
+              {
+                "group": "Workspace",
+                "id": "notes",
+                "title": "Notes"
+              }
+            ]
+          }
+        },
         "agentCapabilities": {
+          "_meta": {
+            "ash": {
+              "extMethods": [
+                "_ash/surfaces/list",
+                "_ash/surface/open",
+                "_a2ui/action"
+              ],
+              "surfaces": [
+                {
+                  "group": "Workspace",
+                  "id": "notes",
+                  "title": "Notes"
+                }
+              ]
+            }
+          },
           "loadSession": true,
           "mcpCapabilities": {
             "http": false,
@@ -16,7 +48,9 @@
             "embeddedContext": false,
             "image": false
           },
-          "sessionCapabilities": {}
+          "sessionCapabilities": {
+            "list": {}
+          }
         },
         "agentInfo": {
           "name": "fake_host",

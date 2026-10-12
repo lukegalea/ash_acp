@@ -37,8 +37,10 @@ shapes everything else — **no second authorization model**:
 | Prompt (`session/prompt`) | a declared Ash action, resolved by `AshAcp.PromptTarget`, executed with `Ash.run_action/2` (actor from the session, `authorize?: true`) |
 | Permission request (`session/request_permission`) | the host's approval resource (ADR 0015), via `AshAcp.PermissionRequest` |
 | `session/update` — transcript chunks | the session resource's messages, replayed and appended through the store |
-| `session/update` — `availableCommands` | `Ash.can?/3` pruned action surface (`AshAcp.AvailableActions`) |
-| `session/update` — `_meta.a2ui` | opaque A2UI descriptors from `AshAcp.SurfaceProvider`, carried verbatim — never generated or re-defined here (`update.surface` remains as a deprecated alias for one release) |
+| `session/update` — `availableCommands` | `Ash.can?/3` pruned action surface (`AshAcp.AvailableActions`) — sent after `session/new`, after the `session/load` replay, and closing every turn |
+| `session/update` — `_meta.a2ui` | opaque A2UI descriptors from `AshAcp.SurfaceProvider`, carried verbatim — never generated or re-defined here; re-emitted on `session/load` (the session's last surface) |
+| `session/list` | `AshAcp.SessionStore.list/1` (optional), advertised as `sessionCapabilities.list` |
+| `_`-prefixed extension methods | `AshAcp.ExtMethods` (optional), advertised under `agentCapabilities._meta.ash`; consequential calls go through `AshAcp.PermissionRequest` and `session/request_permission` |
 | `session/update` — rows | read actions stream bounded rows (first 50) + total count as a `session/update`; `tenant:` on the action spec passes through to Ash |
 | `session/update` — pending approvals | `tool_call` updates with `status: "pending"`, bound to the approval resource record |
 
@@ -47,15 +49,16 @@ The long-form mapping table lives in the host repo's documentation area
 
 ## Host seams
 
-Four behaviours, all host-implemented; the library ships none of them:
+Host-implemented behaviours; the library ships none of them:
 
 | Behaviour | Callbacks | Purpose |
 |---|---|---|
-| `AshAcp.SessionStore` | `create/1, load/1, append_message/3, close/1` | sessions backed by the host's own resource |
+| `AshAcp.SessionStore` | `create/1, load/1, append_message/3, close/1` (+ optional `list/1`) | sessions backed by the host's own resource |
 | `AshAcp.PromptTarget` | `resolve/3` | prompt text → Ash action + inputs |
 | `AshAcp.PermissionRequest` | `request/3` (+ optional `resolve/3`) | approvals mapped onto the host approval resource |
 | `AshAcp.Authenticator` (optional) | `authenticate/1` | `{:ok, actor}` on `initialize` / `session/new` / `session/load`; the actor becomes the session's actor; `{:error, _}` rejects with `-32000`. Unconfigured, the server must run behind a trusted boundary only |
-| `AshAcp.SurfaceProvider` (optional) | `surface/2` | A2UI surface descriptors carried under `update._meta.a2ui` |
+| `AshAcp.SurfaceProvider` (optional) | `surface/2` | A2UI surface descriptors carried under `update._meta.a2ui`; `meta.reason` is `:session_new`, `:session_load` or `:turn_end` |
+| `AshAcp.ExtMethods` (optional) | `methods/0, handle/3` (+ optional `capabilities/1`) | `_`-prefixed extension methods — see below |
 
 Configure in application env:
 
@@ -65,8 +68,30 @@ config :ash_acp,
   prompt_target: MyApp.AcpPromptTarget,
   permission_request: MyApp.AcpPermissionRequest,
   surface_provider: MyApp.AcpSurfaceProvider,
-  agent_info: %{name: "my_app", version: "1.0.0"}
+  ext_methods: MyApp.AcpExt,
+  agent_info: %{name: "my_app", version: "1.0.0"},
+  candidate_actions: [{MyApp.Helpdesk.Ticket, :summarize}]
 ```
+
+## Extension methods
+
+ACP lets an agent expose custom methods whose names start with `_`. A host
+implements `AshAcp.ExtMethods`; the library routes the listed methods to
+`handle/3` with `%{session, session_id, actor, permission}`, carries the
+result verbatim, emits any returned `AshAcp.Updates` as `session/update`s,
+and turns `{:request_permission, spec}` into the host's own
+`AshAcp.PermissionRequest` decision — pending ones become a
+`session/request_permission` round trip, after which `handle/3` is called
+again with the outcome. Initialize advertises them:
+
+```json
+"agentCapabilities": {"_meta": {"ash": {"extMethods": ["_ash/surfaces/list", "_ash/surface/open", "_a2ui/action"], "surfaces": [...]}}}
+```
+
+(mirrored at the result's top-level `_meta.ash`). The shared `ash`
+conventions — `_ash/surfaces/list`, `_ash/surface/open`, `_a2ui/action` —
+are specified by `priv/acp_schema/ash_ext.json`, and the golden fixtures are
+validated against it.
 
 ## Transports
 
@@ -109,7 +134,8 @@ ndjson.
 
 ## What is deliberately not here
 
-`terminal/*` and filesystem methods (deferred), A2UI generation (that is
+`terminal/*` and filesystem methods (deferred), streaming updates *during* a
+long action (updates are emitted when a turn or extension call settles), A2UI generation (that is
 `ash_a2ui`'s job — this library only carries the payloads), any host resource
 or migration, and any authorization decision that Ash policies did not make.
 

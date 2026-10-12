@@ -28,10 +28,17 @@ defmodule AshAcp.Server do
   |---|---|
   | `initialize` | optional `AshAcp.Authenticator.authenticate/1` |
   | `session/new` | `AshAcp.Authenticator` (optional), `AshAcp.SessionStore.create/1` |
-  | `session/load` | `AshAcp.Authenticator` (optional), `AshAcp.SessionStore.load/1`, transcript replay |
+  | `session/load` | `AshAcp.Authenticator` (optional), `AshAcp.SessionStore.load/1`, transcript replay, then commands + last surface |
+  | `session/list` | `AshAcp.SessionStore.list/1` (optional; advertised as `sessionCapabilities.list`) |
   | `session/prompt` | `AshAcp.PromptTarget`, `AshAcp.PermissionRequest`, `AshAcp.SurfaceProvider`, `Ash.read/2` or `Ash.run_action/2` (`authorize?: true`), `Ash.can?/3` |
   | `session/cancel` | none (answers the in-flight prompt with `stopReason: "cancelled"`) |
+  | `_`-prefixed extension methods | `AshAcp.ExtMethods.handle/3` (optional), `AshAcp.PermissionRequest` for consequential ones |
   | client responses to our `session/request_permission` | `AshAcp.PermissionRequest.resolve/3` |
+
+  Every `available_commands_update` (after `session/new`, after the
+  `session/load` replay, and closing each prompt turn) carries the
+  `Ash.can?/3`-pruned commands and — when `AshAcp.SurfaceProvider` returns
+  one — the A2UI surface under `update._meta.a2ui`.
 
   A prompt turn that needs approval **stays open**: `session/request_permission`
   goes out with no prompt response, and the prompt's response is only sent
@@ -65,11 +72,13 @@ defmodule AshAcp.Server do
 
   alias AshAcp.AvailableActions
   alias AshAcp.JsonRpc
+  alias AshAcp.Updates
 
   require Logger
 
   defstruct [
     :config,
+    actor: nil,
     sessions: %{},
     in_flight: %{},
     pending_permissions: %{},
@@ -79,6 +88,7 @@ defmodule AshAcp.Server do
 
   @type t :: %__MODULE__{
           config: map(),
+          actor: term(),
           sessions: %{String.t() => term()},
           in_flight: %{String.t() => term()},
           pending_permissions: %{term() => map()},
@@ -154,6 +164,10 @@ defmodule AshAcp.Server do
     with_params(message, state, &handle_session_load(&1, &2, &3))
   end
 
+  defp do_handle_message(%{"method" => "session/list"} = message, state) do
+    with_params(message, state, &handle_session_list(&1, &2, &3))
+  end
+
   defp do_handle_message(%{"method" => "session/prompt"} = message, state) do
     with_params(message, state, &handle_session_prompt(&1, &2, &3))
   end
@@ -180,22 +194,40 @@ defmodule AshAcp.Server do
            state
            | in_flight: Map.delete(state.in_flight, session_id),
              pending_permissions:
-               Map.reject(state.pending_permissions, fn {_id, p} -> p.session_id == session_id end)
+               Map.reject(state.pending_permissions, fn {_id, p} ->
+                 p.kind == :prompt and p.session_id == session_id
+               end)
          }}
     end
   end
 
-  # Unknown method: requests get -32601; notifications are never answered.
+  # Extension methods (`_`-prefixed, ACP "Extensibility") the host's
+  # `AshAcp.ExtMethods` lists; any other `_` method falls through to -32601.
+  defp do_handle_message(%{"method" => "_" <> _ = method} = message, state) do
+    handler = Map.get(state.config, :ext_methods)
+
+    if handler && method in ext_method_names(handler) do
+      with_params(message, state, &handle_ext(handler, method, &1, &2, &3))
+    else
+      unknown_method(message, state)
+    end
+  end
+
   defp do_handle_message(%{"method" => _method} = message, state) do
+    unknown_method(message, state)
+  end
+
+  defp do_handle_message(_other, state) do
+    {JsonRpc.std_error(nil, -32600), [], state}
+  end
+
+  # Unknown method: requests get -32601; notifications are never answered.
+  defp unknown_method(message, state) do
     if Map.has_key?(message, "id") do
       {JsonRpc.std_error(message["id"], -32601), [], state}
     else
       {nil, [], state}
     end
-  end
-
-  defp do_handle_message(_other, state) do
-    {JsonRpc.std_error(nil, -32600), [], state}
   end
 
   @doc """
@@ -244,7 +276,7 @@ defmodule AshAcp.Server do
 
       module ->
         case module.authenticate(params) do
-          {:ok, actor} -> fun.(actor, state)
+          {:ok, actor} -> fun.(actor, remember_actor(state, actor))
           {:error, reason} -> auth_required(message, reason, state)
           other -> seam_violation(Map.get(message, "id"), module, "authenticate/1", other, state)
         end
@@ -278,9 +310,10 @@ defmodule AshAcp.Server do
             AshAcp.acp_version()
           end
 
-        result = %{
-          "protocolVersion" => negotiated,
-          "agentCapabilities" => %{
+        ext_meta = ext_meta(state)
+
+        capabilities =
+          %{
             "loadSession" => true,
             "promptCapabilities" => %{
               "image" => false,
@@ -288,11 +321,21 @@ defmodule AshAcp.Server do
               "embeddedContext" => false
             },
             "mcpCapabilities" => %{"http" => false, "sse" => false},
-            "sessionCapabilities" => %{}
-          },
-          "authMethods" => [],
-          "agentInfo" => agent_info(state)
-        }
+            "sessionCapabilities" => session_capabilities(state)
+          }
+          |> maybe_put("_meta", ext_meta)
+
+        # The `ash` extension advertisement lives in the capability object's
+        # `_meta` (where ACP's extensibility guidance puts custom
+        # capabilities) and is mirrored at the result's own `_meta`.
+        result =
+          %{
+            "protocolVersion" => negotiated,
+            "agentCapabilities" => capabilities,
+            "authMethods" => [],
+            "agentInfo" => agent_info(state)
+          }
+          |> maybe_put("_meta", ext_meta)
 
         {JsonRpc.response(message["id"], result), [], state}
 
@@ -326,7 +369,11 @@ defmodule AshAcp.Server do
         session = put_actor(session, actor)
         session_id = session_id!(session)
 
-        {JsonRpc.response(message["id"], %{"sessionId" => session_id}), [],
+        # The palette (and any opening surface) right away, not only at the
+        # first turn's end. It precedes the response, like every update.
+        {commands, state} = final_update(state, session, session_id, :session_new)
+
+        {JsonRpc.response(message["id"], %{"sessionId" => session_id}), [commands],
          %{state | sessions: Map.put(state.sessions, session_id, session)}}
 
       {:error, reason} ->
@@ -353,18 +400,16 @@ defmodule AshAcp.Server do
           with :ok <- check_session_ownership(session, actor, message) do
             session = put_actor(session, actor)
 
-            notifications =
+            replay =
               Enum.map(transcript(session), fn %{role: role, text: text} ->
-                JsonRpc.notification("session/update", %{
-                  "sessionId" => session_id,
-                  "update" => %{
-                    "sessionUpdate" => chunk_type(role),
-                    "content" => %{"type" => "text", "text" => text}
-                  }
-                })
+                Updates.notification(session_id, chunk(role, text))
               end)
 
-            {JsonRpc.response(message["id"], %{}), notifications,
+            # After the transcript: the commands and the session's last
+            # surface, so a resumed client is where it left off.
+            {commands, state} = final_update(state, session, session_id, :session_load)
+
+            {JsonRpc.response(message["id"], %{}), replay ++ [commands],
              %{state | sessions: Map.put(state.sessions, session_id, session)}}
           else
             {:error, response} ->
@@ -386,30 +431,83 @@ defmodule AshAcp.Server do
   # no identity (no `AshAcp.Authenticator` configured — the trusted-boundary
   # rule) or when the stored session carries no owner.
   defp check_session_ownership(session, actor, message) do
-    owner = actor_of(session)
-
-    if owner && actor && owner != actor do
-      {:error,
-       JsonRpc.error(message["id"], -32002, "Resource not found", %{
-         "reason" => "session belongs to another actor"
-       })}
+    if foreign?(session, actor) do
+      {:error, foreign_session(message["id"])}
     else
       :ok
     end
   end
+
+  defp foreign?(session, actor) do
+    owner = actor_of(session)
+    not is_nil(owner) and not is_nil(actor) and owner != actor
+  end
+
+  defp foreign_session(request_id) do
+    JsonRpc.error(request_id, -32002, "Resource not found", %{
+      "reason" => "session belongs to another actor"
+    })
+  end
+
+  # == session/list ==========================================================
+
+  defp handle_session_list(params, message, state) do
+    store = session_store!(state)
+
+    if exports?(store, :list, 1) do
+      filter = %{"cwd" => params["cwd"], "cursor" => params["cursor"], "actor" => state.actor}
+
+      case store.list(filter) do
+        {:ok, sessions} when is_list(sessions) ->
+          {session_list(message["id"], sessions, nil, state), [], state}
+
+        {:ok, sessions, cursor} when is_list(sessions) ->
+          {session_list(message["id"], sessions, cursor, state), [], state}
+
+        {:error, reason} ->
+          {JsonRpc.error(message["id"], -32603, "sessions could not be listed", %{
+             "reason" => inspect(reason)
+           }), [], state}
+
+        other ->
+          seam_violation(message["id"], store, "list/1", other, state)
+      end
+    else
+      {JsonRpc.std_error(message["id"], -32601), [], state}
+    end
+  end
+
+  defp session_list(request_id, sessions, cursor, state) do
+    infos =
+      sessions
+      |> Enum.reject(&foreign?(&1, state.actor))
+      |> Enum.map(&session_info/1)
+
+    JsonRpc.response(request_id, maybe_put(%{"sessions" => infos}, "nextCursor", cursor))
+  end
+
+  defp session_info(session) do
+    %{"sessionId" => session_id!(session), "cwd" => to_string(get_key(session, :cwd) || "/")}
+    |> maybe_put("title", get_key(session, :title))
+    |> maybe_put("updatedAt", iso8601(get_key(session, :updated_at)))
+  end
+
+  defp iso8601(nil), do: nil
+  defp iso8601(value) when is_binary(value), do: value
+  defp iso8601(value), do: stringify(value)
 
   # == session/prompt ========================================================
 
   defp handle_session_prompt(params, message, state) do
     with {:ok, session_id, prompt_text} <- extract_prompt(params),
          :ok <- check_not_in_flight(state, session_id) do
-      case fetch_session(state, session_id) do
+      case fetch_owned_session(state, session_id, message["id"]) do
         {:ok, session, state} ->
           state = put_in(state, [Access.key!(:in_flight), session_id], message["id"])
           run_prompt_turn(session, session_id, prompt_text, message["id"], state)
 
-        {:error, reason} ->
-          {session_not_found(message["id"], reason), [], state}
+        {:error, response} ->
+          {response, [], state}
       end
     else
       {:error, {:invalid_params, reason}} ->
@@ -507,24 +605,13 @@ defmodule AshAcp.Server do
   defp request_permission(session, session_id, spec, request_id, request_ref, state) do
     {tool_call_id, state} = next_tool_call_id(state)
     {outbound_id, state} = next_outbound_id(state)
-
-    outbound =
-      JsonRpc.request(outbound_id, "session/request_permission", %{
-        "sessionId" => session_id,
-        "toolCall" => %{
-          "toolCallId" => tool_call_id,
-          "title" => spec.title,
-          "kind" => tool_kind(spec),
-          "status" => "pending"
-        },
-        "options" => @default_permission_options,
-        "_meta" => %{"requestRef" => encode_ref(request_ref)}
-      })
+    outbound = permission_request(outbound_id, session_id, tool_call_id, spec, request_ref)
 
     state = %{
       state
       | pending_permissions:
           Map.put(state.pending_permissions, outbound_id, %{
+            kind: :prompt,
             session_id: session_id,
             request_ref: request_ref,
             action_spec: spec,
@@ -545,20 +632,31 @@ defmodule AshAcp.Server do
   # original request id — reflects the outcome. Approval executes the action
   # (streaming its updates first, response last); denial ends the turn
   # refused with a failed tool call update.
+  defp handle_permission_outcome(%{kind: :ext} = permission, result, state) do
+    %{session_id: session_id, tool_call_id: tool_call_id, ext: ext} = permission
+    tool_call = {session_id, tool_call_id}
+
+    case resolve_permission(permission, result, state) do
+      {:approved, approval} ->
+        ext_resume(ext, {:approved, approval}, tool_call, state)
+
+      {:denied} ->
+        ext_resume(ext, :denied, tool_call, state)
+
+      other ->
+        seam_violation(ext.id, permission_request!(state), "resolve/3", other, state, [
+          tool_call_update(session_id, tool_call_id, "failed", %{
+            "content" => [tool_content("Permission resolution failed")]
+          })
+        ])
+    end
+  end
+
   defp handle_permission_outcome(permission, result, state) do
     %{session: session, session_id: session_id, action_spec: spec, tool_call_id: tool_call_id} =
       permission
 
-    outcome = result["outcome"] || result
-
-    resolved =
-      if function_exported?(permission_request!(state), :resolve, 3) do
-        permission_request!(state).resolve(permission.request_ref, outcome, session)
-      else
-        AshAcp.PermissionRequest.default_resolve(permission.request_ref, outcome)
-      end
-
-    case resolved do
+    case resolve_permission(permission, result, state) do
       {:approved, approval} ->
         execute_action(session, session_id, spec, permission.prompt_request_id, state, approval)
 
@@ -597,6 +695,32 @@ defmodule AshAcp.Server do
     end
   end
 
+  # The host's resolve/3 when exported, else the default option-id mapping.
+  defp resolve_permission(permission, result, state) do
+    outcome = result["outcome"] || result
+    module = permission_request!(state)
+
+    if exports?(module, :resolve, 3) do
+      module.resolve(permission.request_ref, outcome, permission.session)
+    else
+      AshAcp.PermissionRequest.default_resolve(permission.request_ref, outcome)
+    end
+  end
+
+  defp permission_request(outbound_id, session_id, tool_call_id, spec, request_ref) do
+    JsonRpc.request(outbound_id, "session/request_permission", %{
+      "sessionId" => session_id,
+      "toolCall" => %{
+        "toolCallId" => tool_call_id,
+        "title" => spec.title,
+        "kind" => tool_kind(spec),
+        "status" => "pending"
+      },
+      "options" => @default_permission_options,
+      "_meta" => %{"requestRef" => encode_ref(request_ref)}
+    })
+  end
+
   # A seam returned something outside its contract. Never silent: the
   # affected prompt is answered with -32603 and the module is named in the
   # log, so a broken host integration is loud instead of a hanging client.
@@ -617,6 +741,239 @@ defmodule AshAcp.Server do
       end
 
     {response, extra_notifications, state}
+  end
+
+  # == extension methods ====================================================
+
+  # The handler's method names, as advertised and as routed.
+  defp ext_method_names(handler), do: Enum.map(handler.methods(), &to_string/1)
+
+  # `%{"ash" => %{"extMethods" => [...], ...capabilities/1}}`, or nil with no
+  # handler. A failing `capabilities/1` is logged and its extras omitted: an
+  # optional index must never break the handshake.
+  defp ext_meta(state) do
+    case Map.get(state.config, :ext_methods) do
+      nil ->
+        nil
+
+      handler ->
+        extra = ext_capabilities(handler, ext_ctx(nil, nil, state))
+        %{"ash" => Map.put(extra, "extMethods", ext_method_names(handler))}
+    end
+  end
+
+  defp ext_capabilities(handler, ctx) do
+    if exports?(handler, :capabilities, 1) do
+      case handler.capabilities(ctx) do
+        extra when is_map(extra) -> stringify(extra)
+        _other -> %{}
+      end
+    else
+      %{}
+    end
+  rescue
+    e ->
+      Logger.error(fn ->
+        "AshAcp: #{inspect(handler)}.capabilities/1 crashed: " <>
+          Exception.format(:error, e, __STACKTRACE__)
+      end)
+
+      %{}
+  end
+
+  defp ext_ctx(session, session_id, state) do
+    %{
+      session: session,
+      session_id: session_id,
+      actor: (session && actor_of(session)) || state.actor,
+      permission: nil
+    }
+  end
+
+  defp handle_ext(handler, method, params, message, state) do
+    id = message["id"]
+
+    case ext_session(params, id, state) do
+      {:ok, session, session_id, state} ->
+        ext = %{
+          handler: handler,
+          method: method,
+          params: params,
+          id: id,
+          ctx: ext_ctx(session, session_id, state)
+        }
+
+        returned = handler.handle(method, params, ext.ctx)
+
+        if Map.has_key?(message, "id") do
+          ext_first(returned, ext, state)
+        else
+          # an extension notification: dispatched, never answered
+          {nil, [], state}
+        end
+
+      {:error, response} ->
+        if Map.has_key?(message, "id"), do: {response, [], state}, else: {nil, [], state}
+    end
+  end
+
+  defp ext_session(params, request_id, state) do
+    case params["sessionId"] do
+      nil ->
+        {:ok, nil, nil, state}
+
+      session_id when is_binary(session_id) ->
+        case fetch_owned_session(state, session_id, request_id) do
+          {:ok, session, state} -> {:ok, session, session_id, state}
+          {:error, response} -> {:error, response}
+        end
+
+      _other ->
+        {:error,
+         JsonRpc.std_error(request_id, -32602, %{"reason" => "sessionId must be a string"})}
+    end
+  end
+
+  defp ext_first({:request_permission, spec}, ext, state) when is_map(spec) do
+    if ext.ctx.session do
+      ext_request_permission(normalize_ext_spec(spec, ext), ext, state)
+    else
+      {JsonRpc.std_error(ext.id, -32602, %{
+         "reason" => "#{ext.method} needs a sessionId: the operation requires permission"
+       }), [], state}
+    end
+  end
+
+  defp ext_first(returned, ext, state), do: ext_answer(returned, ext, nil, state)
+
+  # The host's own approval seam decides first, exactly as for a prompt.
+  defp ext_request_permission(spec, ext, state) do
+    module = permission_request!(state)
+
+    case module.request(ext.ctx.session, spec, spec.inputs) do
+      {:approved, approval} ->
+        ext_resume(ext, {:approved, approval}, nil, state)
+
+      {:denied} ->
+        ext_resume(ext, :denied, nil, state)
+
+      {:pending, request_ref} ->
+        session_id = ext.ctx.session_id
+        {tool_call_id, state} = next_tool_call_id(state)
+        {outbound_id, state} = next_outbound_id(state)
+        outbound = permission_request(outbound_id, session_id, tool_call_id, spec, request_ref)
+
+        pending = %{
+          kind: :ext,
+          session_id: session_id,
+          session: ext.ctx.session,
+          request_ref: request_ref,
+          tool_call_id: tool_call_id,
+          ext: ext
+        }
+
+        # The extension request stays open until the client answers.
+        {nil, [outbound],
+         %{state | pending_permissions: Map.put(state.pending_permissions, outbound_id, pending)}}
+
+      other ->
+        seam_violation(ext.id, module, "request/3", other, state)
+    end
+  end
+
+  # The second call: the handler answers knowing the permission outcome.
+  # `tool_call` is `{session_id, tool_call_id}` when the client was asked, so
+  # the pending tool call it rendered is settled too.
+  defp ext_resume(ext, permission, tool_call, state) do
+    ext = put_in(ext, [:ctx, :permission], permission)
+    returned = ext.handler.handle(ext.method, ext.params, ext.ctx)
+    ext_answer(returned, ext, tool_call, state)
+  end
+
+  defp ext_answer(returned, ext, tool_call, state) do
+    case returned do
+      {:ok, result} ->
+        settled = settle_tool_call(tool_call, ext.ctx.permission, :ok)
+        {JsonRpc.response(ext.id, stringify(result)), settled, state}
+
+      {:ok, result, updates} when is_list(updates) ->
+        ext_answer_with_updates(result, updates, ext, tool_call, state)
+
+      {:error, code, message} when is_integer(code) and is_binary(message) ->
+        {JsonRpc.error(ext.id, code, message), settle_tool_call(tool_call, nil, :error), state}
+
+      {:error, code, message, data} when is_integer(code) and is_binary(message) ->
+        {JsonRpc.error(ext.id, code, message, stringify(data)),
+         settle_tool_call(tool_call, nil, :error), state}
+
+      {:error, reason} ->
+        {JsonRpc.error(ext.id, -32603, "extension method failed", %{"reason" => inspect(reason)}),
+         settle_tool_call(tool_call, nil, :error), state}
+
+      other ->
+        seam_violation(
+          ext.id,
+          ext.handler,
+          "handle/3",
+          other,
+          state,
+          settle_tool_call(tool_call, nil, :error)
+        )
+    end
+  end
+
+  defp ext_answer_with_updates(result, updates, ext, tool_call, state) do
+    case ext.ctx.session_id do
+      nil ->
+        seam_violation(
+          ext.id,
+          ext.handler,
+          "handle/3",
+          {:ok, :updates_without_a_session},
+          state,
+          settle_tool_call(tool_call, nil, :error)
+        )
+
+      session_id ->
+        notifications =
+          Enum.map(updates, &Updates.notification(session_id, stringify(&1))) ++
+            settle_tool_call(tool_call, ext.ctx.permission, :ok)
+
+        {JsonRpc.response(ext.id, stringify(result)), notifications, state}
+    end
+  end
+
+  defp settle_tool_call(nil, _permission, _result), do: []
+
+  defp settle_tool_call({session_id, tool_call_id}, :denied, _result) do
+    [
+      tool_call_update(session_id, tool_call_id, "failed", %{
+        "content" => [tool_content("Permission denied")]
+      })
+    ]
+  end
+
+  defp settle_tool_call({session_id, tool_call_id}, _permission, :ok),
+    do: [tool_call_update(session_id, tool_call_id, "completed")]
+
+  defp settle_tool_call({session_id, tool_call_id}, _permission, :error) do
+    [
+      tool_call_update(session_id, tool_call_id, "failed", %{
+        "content" => [tool_content("Action failed")]
+      })
+    ]
+  end
+
+  # The spec handed to `AshAcp.PermissionRequest.request/3`: the host's keys
+  # (e.g. `:resource`/`:action`) kept, the prompt-spec keys defaulted, and
+  # the originating call attached under `:ext`.
+  defp normalize_ext_spec(spec, ext) do
+    spec
+    |> Map.put_new(:title, ext.method)
+    |> Map.put_new(:kind, :execute)
+    |> Map.put_new(:inputs, %{})
+    |> Map.put_new(:name, ext.method)
+    |> Map.put(:ext, %{method: ext.method, params: ext.params})
   end
 
   # == action execution ======================================================
@@ -779,7 +1136,7 @@ defmodule AshAcp.Server do
          result_text,
          state
        ) do
-    {final, state} = final_update(state, session, session_id)
+    {final, state} = final_update(state, session, session_id, :turn_end)
 
     notifications = [
       started,
@@ -882,13 +1239,7 @@ defmodule AshAcp.Server do
   # == session/update construction ==========================================
 
   defp agent_chunk(session_id, text) do
-    JsonRpc.notification("session/update", %{
-      "sessionId" => session_id,
-      "update" => %{
-        "sessionUpdate" => "agent_message_chunk",
-        "content" => %{"type" => "text", "text" => text}
-      }
-    })
+    Updates.notification(session_id, Updates.agent_message(text))
   end
 
   # Tool call content is wrapped: ToolCallContent = {"type": "content", ...Content}.
@@ -905,41 +1256,38 @@ defmodule AshAcp.Server do
       }
       |> Map.merge(Map.new(extra, fn {k, v} -> {to_string(k), v} end))
 
-    JsonRpc.notification("session/update", %{"sessionId" => session_id, "update" => update})
+    Updates.notification(session_id, update)
   end
 
-  # The closing update of a turn: available actions pruned with `Ash.can?/3`
-  # for the session actor and — when a provider is configured — the host's
-  # opaque A2UI surface descriptors, carried verbatim under
-  # `update._meta.a2ui` (the ACP `_meta` extension point). `update.surface`
-  # is a deprecated alias kept for one release.
-  defp final_update(state, session, session_id) do
-    candidates = Map.get(state.config, :candidate_actions, [])
+  # The commands update (after session/new, after the session/load replay,
+  # closing each turn): available actions pruned with `Ash.can?/3` for the
+  # session actor and — when a provider returns one — the host's opaque A2UI
+  # surface, carried verbatim under `update._meta.a2ui` (the ACP `_meta`
+  # extension point). `reason` tells the provider why it is asked.
+  defp final_update(state, session, session_id, reason) do
+    candidates = Map.get(state.config, :candidate_actions) || []
     commands = AvailableActions.for_actor(actor_of(session), candidates)
 
     update =
-      %{"sessionUpdate" => "available_commands_update", "availableCommands" => commands}
-      |> maybe_put_a2ui(surface_of(state, session))
+      commands
+      |> Updates.available_commands()
+      |> maybe_put_a2ui(surface_of(state, session, reason))
 
-    {JsonRpc.notification("session/update", %{"sessionId" => session_id, "update" => update}),
-     state}
+    {Updates.notification(session_id, update), state}
   end
 
   defp maybe_put_a2ui(update, nil), do: update
+  defp maybe_put_a2ui(update, payload), do: Map.put(update, "_meta", %{"a2ui" => payload})
 
-  defp maybe_put_a2ui(update, payload) do
-    update
-    |> Map.put("_meta", %{"a2ui" => payload})
-    |> Map.put("surface", payload)
-  end
-
-  defp surface_of(state, session) do
+  defp surface_of(state, session, reason) do
     case Map.get(state.config, :surface_provider) do
       nil -> nil
-      provider -> provider.surface(session, %{})
+      provider -> provider.surface(session, %{reason: reason})
     end
   rescue
-    _ -> nil
+    e ->
+      Logger.warning(fn -> "AshAcp: surface provider failed: " <> Exception.message(e) end)
+      nil
   end
 
   # == wire hygiene ==========================================================
@@ -1017,6 +1365,22 @@ defmodule AshAcp.Server do
     end
   end
 
+  # A session addressed by id on this connection: cached, or loaded from the
+  # store — and then never one owned by another actor than the connection's.
+  defp fetch_owned_session(state, session_id, request_id) do
+    case fetch_session(state, session_id) do
+      {:ok, session, new_state} ->
+        if foreign?(session, state.actor) do
+          {:error, foreign_session(request_id)}
+        else
+          {:ok, session, new_state}
+        end
+
+      {:error, reason} ->
+        {:error, session_not_found(request_id, reason)}
+    end
+  end
+
   defp session_not_found(id, reason) do
     JsonRpc.error(id, -32002, "Resource not found", %{
       "reason" => "session not found",
@@ -1039,8 +1403,8 @@ defmodule AshAcp.Server do
   defp normalize_role(role) when role in [:agent, "agent", :assistant, "assistant"], do: :agent
   defp normalize_role(_role), do: :user
 
-  defp chunk_type(:user), do: "user_message_chunk"
-  defp chunk_type(:agent), do: "agent_message_chunk"
+  defp chunk(:user, text), do: Updates.user_message(text)
+  defp chunk(:agent, text), do: Updates.agent_message(text)
 
   defp session_id!(session) do
     case get_key(session, :session_id) do
@@ -1053,6 +1417,17 @@ defmodule AshAcp.Server do
   end
 
   defp actor_of(session), do: get_key(session, :actor)
+
+  defp remember_actor(state, nil), do: state
+  defp remember_actor(state, actor), do: %{state | actor: actor}
+
+  defp exports?(module, fun, arity) do
+    Code.ensure_loaded?(module) and function_exported?(module, fun, arity)
+  end
+
+  defp session_capabilities(state) do
+    if exports?(session_store!(state), :list, 1), do: %{"list" => %{}}, else: %{}
+  end
 
   # The authenticated actor (when `AshAcp.Authenticator` is configured)
   # replaces whatever the host store put on the session.

@@ -27,6 +27,18 @@ defmodule AshAcp.SessionStore do
     (extra keys allowed). Replayed as `session/update` chunks on
     `session/load` and appended through `append_message/3`.
 
+  ## Listing (optional)
+
+  Export `list/1` to support ACP `session/list` (advertised as
+  `sessionCapabilities.list` only when exported). It receives
+  `%{"cwd" => cwd | nil, "cursor" => cursor | nil, "actor" => actor | nil}`
+  — `actor` is the connection's authenticated actor; list only what it may
+  see — and returns `{:ok, sessions}` or `{:ok, sessions, next_cursor}`.
+  Each session is read like any other (`session_id`, `actor`) plus the
+  optional `cwd` (absolute path; `"/"` when absent), `title` and
+  `updated_at` (`DateTime` or ISO8601 string). Sessions owned by another
+  actor are dropped by the server as defense in depth.
+
   All callbacks run inside `AshAcp.Server.handle_message/2`, so they must not
   write to the wire themselves.
   """
@@ -41,4 +53,11 @@ defmodule AshAcp.SessionStore do
               {:ok, session :: term()} | {:error, term()}
 
   @callback close(session_id :: String.t()) :: :ok
+
+  @callback list(filter :: map()) ::
+              {:ok, [session :: term()]}
+              | {:ok, [session :: term()], next_cursor :: String.t() | nil}
+              | {:error, term()}
+
+  @optional_callbacks list: 1
 end

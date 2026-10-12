@@ -1,0 +1,201 @@
+{
+  "description": "extension methods: the advertised `ash` methods list and open surfaces; an unlisted `_` method is -32601 and an extension notification is never answered",
+  "expected": [
+    {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "result": {
+        "_meta": {
+          "ash": {
+            "extMethods": [
+              "_ash/surfaces/list",
+              "_ash/surface/open",
+              "_a2ui/action"
+            ],
+            "surfaces": [
+              {
+                "group": "Workspace",
+                "id": "notes",
+                "title": "Notes"
+              }
+            ]
+          }
+        },
+        "agentCapabilities": {
+          "_meta": {
+            "ash": {
+              "extMethods": [
+                "_ash/surfaces/list",
+                "_ash/surface/open",
+                "_a2ui/action"
+              ],
+              "surfaces": [
+                {
+                  "group": "Workspace",
+                  "id": "notes",
+                  "title": "Notes"
+                }
+              ]
+            }
+          },
+          "loadSession": true,
+          "mcpCapabilities": {
+            "http": false,
+            "sse": false
+          },
+          "promptCapabilities": {
+            "audio": false,
+            "embeddedContext": false,
+            "image": false
+          },
+          "sessionCapabilities": {
+            "list": {}
+          }
+        },
+        "agentInfo": {
+          "name": "fake_host",
+          "title": "Fake Host",
+          "version": "1.0.0"
+        },
+        "authMethods": [],
+        "protocolVersion": 1
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "sess-1",
+        "update": {
+          "_meta": {
+            "a2ui": {
+              "title": "Notes",
+              "type": "list"
+            }
+          },
+          "availableCommands": [
+            {
+              "description": "Summarize the given text",
+              "name": "FakeHost.Note.summarize"
+            },
+            {
+              "description": "Only actors may run this",
+              "name": "FakeHost.Note.restricted"
+            }
+          ],
+          "sessionUpdate": "available_commands_update"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "result": {
+        "sessionId": "sess-1"
+      }
+    },
+    {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "result": {
+        "surfaces": [
+          {
+            "group": "Workspace",
+            "id": "notes",
+            "title": "Notes"
+          },
+          {
+            "description": "Actors only",
+            "id": "restricted",
+            "recordScoped": true,
+            "title": "Restricted"
+          }
+        ]
+      }
+    },
+    {
+      "id": 4,
+      "jsonrpc": "2.0",
+      "result": {
+        "surfaces": [
+          {
+            "group": "Workspace",
+            "id": "notes",
+            "title": "Notes"
+          }
+        ]
+      }
+    },
+    {
+      "id": 5,
+      "jsonrpc": "2.0",
+      "result": {
+        "a2ui": [
+          {
+            "createSurface": {
+              "catalogId": "fake",
+              "surfaceId": "notes"
+            },
+            "version": "v0.9.1"
+          },
+          {
+            "updateDataModel": {
+              "path": "/",
+              "surfaceId": "notes",
+              "value": {
+                "recordId": "n-1"
+              }
+            },
+            "version": "v0.9.1"
+          }
+        ],
+        "surfaceId": "notes"
+      }
+    },
+    {
+      "error": {
+        "code": -32602,
+        "data": {
+          "reason": "unknown surface \"nope\""
+        },
+        "message": "Invalid params"
+      },
+      "id": 6,
+      "jsonrpc": "2.0"
+    },
+    {
+      "error": {
+        "code": -32002,
+        "data": {
+          "detail": ":not_found",
+          "reason": "session not found"
+        },
+        "message": "Resource not found"
+      },
+      "id": 7,
+      "jsonrpc": "2.0"
+    },
+    {
+      "error": {
+        "code": -32601,
+        "message": "Method not found"
+      },
+      "id": 8,
+      "jsonrpc": "2.0"
+    }
+  ],
+  "input": [
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":1}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session/new\",\"params\":{\"cwd\":\"/home/operator\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"_ash/surfaces/list\",\"params\":{\"sessionId\":\"sess-1\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"_ash/surfaces/list\",\"params\":{}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"_ash/surface/open\",\"params\":{\"sessionId\":\"sess-1\",\"surface\":\"notes\",\"recordId\":\"n-1\",\"query\":{\"sort\":\"title\"}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"_ash/surface/open\",\"params\":{\"sessionId\":\"sess-1\",\"surface\":\"nope\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"_ash/surface/open\",\"params\":{\"sessionId\":\"sess-404\",\"surface\":\"notes\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"_ash/not_listed\",\"params\":{}}",
+    "{\"jsonrpc\":\"2.0\",\"method\":\"_ash/surfaces/list\",\"params\":{}}"
+  ],
+  "setup": {
+    "actor": "operator"
+  }
+}
