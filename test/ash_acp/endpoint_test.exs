@@ -56,12 +56,23 @@ defmodule AshAcp.EndpointTest do
   test "a full round trip: initialize, session/new, session/prompt over ndjson" do
     wire = run([initialize(), session_new(), prompt()])
 
-    assert [%{"id" => 1}, %{"id" => 2}, _tool_call, _chunk, _final, _completed, %{"id" => 3}] =
-             wire
+    assert [
+             %{"id" => 1},
+             %{"method" => "session/update"} = commands,
+             %{"id" => 2},
+             _tool_call,
+             _chunk,
+             _final,
+             _completed,
+             %{"id" => 3}
+           ] = wire
+
+    # the palette arrives with the session, ahead of the session/new response
+    assert commands["params"]["update"]["sessionUpdate"] == "available_commands_update"
 
     assert %{"result" => %{"protocolVersion" => reported}} = Enum.fetch!(wire, 0)
     assert reported == @version
-    assert %{"result" => %{"sessionId" => "sess-1"}} = Enum.fetch!(wire, 1)
+    assert %{"result" => %{"sessionId" => "sess-1"}} = Enum.fetch!(wire, 2)
     assert %{"result" => %{"stopReason" => "end_turn"}} = List.last(wire)
   end
 
@@ -90,8 +101,8 @@ defmodule AshAcp.EndpointTest do
 
   test "notifications never produce wire output" do
     wire = run([initialize(), session_new(), ~s({"jsonrpc":"2.0","method":"x/y"})])
-    # only the two request responses came back
-    assert length(wire) == 2
+    # only the two request responses (and session/new's commands) came back
+    assert [%{"id" => 1}, %{"method" => "session/update"}, %{"id" => 2}] = wire
   end
 
   test "blank lines are skipped" do
@@ -120,14 +131,14 @@ defmodule AshAcp.EndpointTest do
     # in flight, so the notification produces no output at all
     wire = run([initialize(), session_new(), cancel()])
 
-    assert [%{"id" => 1}, %{"id" => 2}] = wire
+    assert [%{"id" => 1}, %{"method" => "session/update"}, %{"id" => 2}] = wire
   end
 
   test "a second prompt sent mid-turn replays after the first, in order" do
     wire = run([initialize(), session_new(), prompt(3, "hello"), prompt(4, "again")])
 
     ids = Enum.map(wire, & &1["id"])
-    assert ids == [1, 2, nil, nil, nil, nil, 3, nil, nil, nil, nil, 4]
+    assert ids == [1, nil, 2, nil, nil, nil, nil, 3, nil, nil, nil, nil, 4]
     assert %{"result" => %{"stopReason" => "end_turn"}} = List.last(wire)
   end
 end

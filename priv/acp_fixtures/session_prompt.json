@@ -5,7 +5,39 @@
       "id": 1,
       "jsonrpc": "2.0",
       "result": {
+        "_meta": {
+          "ash": {
+            "extMethods": [
+              "_ash/surfaces/list",
+              "_ash/surface/open",
+              "_a2ui/action"
+            ],
+            "surfaces": [
+              {
+                "group": "Workspace",
+                "id": "notes",
+                "title": "Notes"
+              }
+            ]
+          }
+        },
         "agentCapabilities": {
+          "_meta": {
+            "ash": {
+              "extMethods": [
+                "_ash/surfaces/list",
+                "_ash/surface/open",
+                "_a2ui/action"
+              ],
+              "surfaces": [
+                {
+                  "group": "Workspace",
+                  "id": "notes",
+                  "title": "Notes"
+                }
+              ]
+            }
+          },
           "loadSession": true,
           "mcpCapabilities": {
             "http": false,
@@ -16,7 +48,9 @@
             "embeddedContext": false,
             "image": false
           },
-          "sessionCapabilities": {}
+          "sessionCapabilities": {
+            "list": {}
+          }
         },
         "agentInfo": {
           "name": "fake_host",
@@ -25,6 +59,32 @@
         },
         "authMethods": [],
         "protocolVersion": 1
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "sess-1",
+        "update": {
+          "_meta": {
+            "a2ui": {
+              "title": "Notes",
+              "type": "list"
+            }
+          },
+          "availableCommands": [
+            {
+              "description": "Summarize the given text",
+              "name": "FakeHost.Note.summarize"
+            },
+            {
+              "description": "Only actors may run this",
+              "name": "FakeHost.Note.restricted"
+            }
+          ],
+          "sessionUpdate": "available_commands_update"
+        }
       }
     },
     {
@@ -88,11 +148,7 @@
               "name": "FakeHost.Note.restricted"
             }
           ],
-          "sessionUpdate": "available_commands_update",
-          "surface": {
-            "title": "Notes",
-            "type": "list"
-          }
+          "sessionUpdate": "available_commands_update"
         }
       }
     },

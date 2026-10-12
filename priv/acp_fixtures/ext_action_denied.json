@@ -1,0 +1,136 @@
+{
+  "description": "_a2ui/action: the host's approval seam denies outright — no client round trip, the handler answers with outcome denied; a host error becomes -32603",
+  "expected": [
+    {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "result": {
+        "_meta": {
+          "ash": {
+            "extMethods": [
+              "_ash/surfaces/list",
+              "_ash/surface/open",
+              "_a2ui/action"
+            ],
+            "surfaces": [
+              {
+                "group": "Workspace",
+                "id": "notes",
+                "title": "Notes"
+              }
+            ]
+          }
+        },
+        "agentCapabilities": {
+          "_meta": {
+            "ash": {
+              "extMethods": [
+                "_ash/surfaces/list",
+                "_ash/surface/open",
+                "_a2ui/action"
+              ],
+              "surfaces": [
+                {
+                  "group": "Workspace",
+                  "id": "notes",
+                  "title": "Notes"
+                }
+              ]
+            }
+          },
+          "loadSession": true,
+          "mcpCapabilities": {
+            "http": false,
+            "sse": false
+          },
+          "promptCapabilities": {
+            "audio": false,
+            "embeddedContext": false,
+            "image": false
+          },
+          "sessionCapabilities": {
+            "list": {}
+          }
+        },
+        "agentInfo": {
+          "name": "fake_host",
+          "title": "Fake Host",
+          "version": "1.0.0"
+        },
+        "authMethods": [],
+        "protocolVersion": 1
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "sess-1",
+        "update": {
+          "_meta": {
+            "a2ui": {
+              "title": "Notes",
+              "type": "list"
+            }
+          },
+          "availableCommands": [
+            {
+              "description": "Summarize the given text",
+              "name": "FakeHost.Note.summarize"
+            },
+            {
+              "description": "Only actors may run this",
+              "name": "FakeHost.Note.restricted"
+            }
+          ],
+          "sessionUpdate": "available_commands_update"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "result": {
+        "sessionId": "sess-1"
+      }
+    },
+    {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "result": {
+        "a2ui": [
+          {
+            "updateDataModel": {
+              "path": "/ui/status",
+              "surfaceId": "notes",
+              "value": "denied"
+            },
+            "version": "v0.9.1"
+          }
+        ],
+        "outcome": "denied"
+      }
+    },
+    {
+      "error": {
+        "code": -32603,
+        "data": {
+          "reason": ":unknown_action"
+        },
+        "message": "extension method failed"
+      },
+      "id": 4,
+      "jsonrpc": "2.0"
+    }
+  ],
+  "input": [
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":1}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session/new\",\"params\":{\"cwd\":\"/home/operator\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"_a2ui/action\",\"params\":{\"sessionId\":\"sess-1\",\"surfaceId\":\"notes\",\"action\":{\"name\":\"publish\",\"context\":{\"text\":\"hello all\"}}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"_a2ui/action\",\"params\":{\"sessionId\":\"sess-1\",\"surfaceId\":\"notes\",\"action\":{\"name\":\"unknown\",\"context\":{}}}}"
+  ],
+  "setup": {
+    "actor": "operator",
+    "permission": "denied"
+  }
+}

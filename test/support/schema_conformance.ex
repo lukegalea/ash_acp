@@ -22,6 +22,7 @@ defmodule AshAcp.TestSupport.SchemaConformance do
   """
 
   @schema_path "priv/acp_schema/schema.json"
+  @ext_schema_path "priv/acp_schema/ash_ext.json"
   @source_path "priv/acp_schema/source.json"
 
   # method → {request definition, response definition}. `session/cancel` is a
@@ -30,6 +31,7 @@ defmodule AshAcp.TestSupport.SchemaConformance do
     "initialize" => {"InitializeRequest", "InitializeResponse"},
     "session/new" => {"NewSessionRequest", "NewSessionResponse"},
     "session/load" => {"LoadSessionRequest", "LoadSessionResponse"},
+    "session/list" => {"ListSessionsRequest", "ListSessionsResponse"},
     "session/prompt" => {"PromptRequest", "PromptResponse"},
     "session/cancel" => {"CancelNotification", nil},
     "session/request_permission" => {"RequestPermissionRequest", "RequestPermissionResponse"}
@@ -46,6 +48,36 @@ defmodule AshAcp.TestSupport.SchemaConformance do
 
       resolved ->
         resolved
+    end
+  end
+
+  @doc "The `ash` extension conventions schema (`priv/acp_schema/ash_ext.json`), resolved."
+  def ext_resolved do
+    case :persistent_term.get({__MODULE__, :ext_resolved}, nil) do
+      nil ->
+        resolved =
+          @ext_schema_path |> File.read!() |> Jason.decode!() |> ExJsonSchema.Schema.resolve()
+
+        :persistent_term.put({__MODULE__, :ext_resolved}, resolved)
+        resolved
+
+      resolved ->
+        resolved
+    end
+  end
+
+  defp ext_method_defs do
+    @ext_schema_path |> File.read!() |> Jason.decode!() |> Map.fetch!("x-methods")
+  end
+
+  @doc """
+  Validates `value` against a definition of the `ash` extension schema.
+  Returns a list of problems; empty means conformance.
+  """
+  def ext_def_problems(definition, value) do
+    case ExJsonSchema.Validator.validate_fragment(ext_resolved(), "#/$defs/#{definition}", value) do
+      :ok -> []
+      {:error, errors} -> Enum.map(errors, fn {m, path} -> "#{definition}: #{m} (at #{path})" end)
     end
   end
 
@@ -89,7 +121,58 @@ defmodule AshAcp.TestSupport.SchemaConformance do
       |> Enum.into(%{})
 
     Enum.flat_map(expected, &validate_outbound(&1, methods_by_id)) ++
-      Enum.flat_map(input_lines, &validate_inbound(&1, methods_by_id))
+      Enum.flat_map(input_lines, &validate_inbound(&1, methods_by_id)) ++
+      ext_problems(expected, input_lines)
+  end
+
+  # The `ash` extension conventions: every successful `_` call's params and
+  # result match ash_ext.json, and an `initialize` advertisement matches
+  # AshCapabilities in both places it appears.
+  defp ext_problems(expected, input_lines) do
+    defs = ext_method_defs()
+    responses = Map.new(Enum.filter(expected, &is_map_key(&1, "id")), &{&1["id"], &1})
+    requests = Enum.flat_map(input_lines, &decode_ids/1)
+
+    calls =
+      Enum.flat_map(requests, fn
+        %{"id" => id, "method" => "_" <> _ = method} = request ->
+          case {defs[method], responses[id]} do
+            {nil, %{"result" => _}} ->
+              ["no ash_ext.json definition for extension method #{method}"]
+
+            {%{"params" => params_def, "result" => result_def}, %{"result" => result}} ->
+              ext_def_problems(params_def, request["params"] || %{}) ++
+                ext_def_problems(result_def, result)
+
+            _error_or_pending ->
+              []
+          end
+
+        _other ->
+          []
+      end)
+
+    advertisements =
+      Enum.flat_map(requests, fn
+        %{"id" => id, "method" => "initialize"} ->
+          case responses[id] do
+            %{"result" => result} ->
+              [
+                get_in(result, ["agentCapabilities", "_meta", "ash"]),
+                get_in(result, ["_meta", "ash"])
+              ]
+              |> Enum.reject(&is_nil/1)
+              |> Enum.flat_map(&ext_def_problems("AshCapabilities", &1))
+
+            _ ->
+              []
+          end
+
+        _other ->
+          []
+      end)
+
+    calls ++ advertisements
   end
 
   defp decode_ids(line) do
@@ -122,6 +205,10 @@ defmodule AshAcp.TestSupport.SchemaConformance do
           case Map.get(methods_by_id, message["id"]) do
             nil ->
               ["response id #{inspect(message["id"])} not correlated with any method"]
+
+            "_" <> _ ->
+              # ExtResponse: unconstrained by ACP; ash_ext.json checks it
+              []
 
             method ->
               case @method_defs[method] do
@@ -216,8 +303,7 @@ defmodule AshAcp.TestSupport.SchemaConformance do
           "availableCommands" => [
             %{"name" => "Example.Note.list_notes", "description" => "List notes"}
           ],
-          "_meta" => %{"a2ui" => %{"type" => "list", "title" => "Notes"}},
-          "surface" => %{"type" => "list", "title" => "Notes"}
+          "_meta" => %{"a2ui" => %{"type" => "list", "title" => "Notes"}}
         }
       }
     }

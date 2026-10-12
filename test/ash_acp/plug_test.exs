@@ -67,7 +67,12 @@ defmodule AshAcp.PlugTest do
 
     lines = decode_lines(conn.resp_body)
 
-    assert [%{"id" => 1}, %{"id" => 2, "result" => %{"sessionId" => "sess-1"}} | rest] = lines
+    assert [
+             %{"id" => 1},
+             %{"method" => "session/update"},
+             %{"id" => 2, "result" => %{"sessionId" => "sess-1"}} | rest
+           ] = lines
+
     assert %{"id" => 3, "result" => %{"stopReason" => "end_turn"}} = List.last(rest)
     # a turn's updates precede its response
     assert length(rest) == 5
@@ -112,7 +117,7 @@ defmodule AshAcp.PlugTest do
         headers: [x_acp_connection: token("conn-2")]
       )
 
-    assert %{"result" => %{"sessionId" => "sess-1"}} = hd(decode_lines(conn.resp_body))
+    assert %{"result" => %{"sessionId" => "sess-1"}} = List.last(decode_lines(conn.resp_body))
   end
 
   test "a missing token gets 401" do

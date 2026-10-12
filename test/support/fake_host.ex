@@ -159,6 +159,7 @@ defmodule FakeHost do
       prompt_target: FakeHost.PromptTarget,
       permission_request: FakeHost.PermissionRequest,
       surface_provider: FakeHost.SurfaceProvider,
+      ext_methods: FakeHost.ExtMethods,
       agent_info: %{name: "fake_host", version: "1.0.0", title: "Fake Host"},
       candidate_actions: [
         {FakeHost.Note, :summarize},
@@ -253,6 +254,33 @@ defmodule FakeHost do
 
     @impl true
     def close(_session_id), do: :ok
+
+    @impl true
+    def list(filter) do
+      send_probe({:list_filter, filter})
+
+      sessions =
+        FakeHost.table()
+        |> :ets.match_object({{:session, :_}, :_})
+        |> Enum.map(fn {_key, session} -> session end)
+        |> Enum.filter(&(is_nil(filter["cwd"]) or &1.cwd == filter["cwd"]))
+        |> Enum.sort_by(& &1.session_id)
+        |> Enum.map(
+          &Map.merge(&1, %{
+            title: "Session #{&1.session_id}",
+            updated_at: ~U[2026-10-12 09:00:00Z]
+          })
+        )
+
+      {:ok, sessions, nil}
+    end
+
+    defp send_probe(message) do
+      case :ets.lookup(FakeHost.table(), :tenant_probe) do
+        [{:tenant_probe, pid}] when is_pid(pid) -> send(pid, message)
+        _ -> :ok
+      end
+    end
   end
 
   def current_actor do
@@ -374,6 +402,114 @@ defmodule FakeHost do
     @impl true
     def resolve(_request_ref, outcome, _session) do
       AshAcp.PermissionRequest.default_resolve(nil, outcome)
+    end
+  end
+
+  # == AshAcp.ExtMethods ====================================================
+
+  defmodule ExtMethods do
+    @moduledoc """
+    The `ash` extension conventions over the fake note resource:
+
+    * `_ash/surfaces/list` — `notes` for everyone, `restricted` only when
+      `Ash.can?/3` lets the actor run `FakeHost.Note.restricted`;
+    * `_ash/surface/open` — `notes` opens; anything else is `-32602`;
+    * `_a2ui/action` — `refresh` applies at once; `publish` is
+      consequential: `{:request_permission, spec}`, then runs
+      `publish_bulletin` as the actor with `authorize?: true`.
+    """
+    @behaviour AshAcp.ExtMethods
+
+    @impl true
+    def methods, do: AshAcp.ExtMethods.conventional_methods()
+
+    @impl true
+    def capabilities(ctx), do: %{"surfaces" => surfaces(ctx.actor)}
+
+    @impl true
+    def handle("_ash/surfaces/list", _params, ctx),
+      do: {:ok, %{"surfaces" => surfaces(ctx.actor)}}
+
+    def handle("_ash/surface/open", %{"surface" => "notes"} = params, _ctx) do
+      {:ok, %{"surfaceId" => "notes", "a2ui" => open_messages(params["recordId"])}}
+    end
+
+    def handle("_ash/surface/open", %{"surface" => other}, _ctx) do
+      {:error, -32602, "Invalid params", %{"reason" => "unknown surface #{inspect(other)}"}}
+    end
+
+    def handle("_a2ui/action", %{"action" => %{"name" => "refresh"}} = params, _ctx) do
+      {:ok, %{"outcome" => "applied", "a2ui" => [status(params["surfaceId"], "refreshed")]}}
+    end
+
+    def handle("_a2ui/action", %{"action" => %{"name" => "publish"}} = params, ctx) do
+      text = get_in(params, ["action", "context", "text"]) || ""
+
+      case ctx.permission do
+        nil ->
+          {:request_permission,
+           %{
+             resource: FakeHost.Note,
+             action: :publish_bulletin,
+             title: "Publish bulletin",
+             inputs: %{text: text}
+           }}
+
+        {:approved, _approval} ->
+          {:ok, published} =
+            FakeHost.Note
+            |> Ash.ActionInput.for_action(:publish_bulletin, %{text: text})
+            |> Ash.run_action(actor: ctx.actor, authorize?: true)
+
+          {:ok, %{"outcome" => "applied", "a2ui" => [status(params["surfaceId"], published)]},
+           [AshAcp.Updates.agent_message(published)]}
+
+        :denied ->
+          {:ok, %{"outcome" => "denied", "a2ui" => [status(params["surfaceId"], "denied")]}}
+      end
+    end
+
+    def handle("_a2ui/action", %{"action" => %{"name" => "explode"}}, _ctx), do: :not_a_result
+
+    def handle("_a2ui/action", _params, _ctx), do: {:error, :unknown_action}
+
+    defp surfaces(actor) do
+      notes = %{"id" => "notes", "title" => "Notes", "group" => "Workspace"}
+
+      restricted = %{
+        "id" => "restricted",
+        "title" => "Restricted",
+        "description" => "Actors only",
+        "recordScoped" => true
+      }
+
+      if Ash.can?({FakeHost.Note, :restricted}, actor),
+        do: [notes, restricted],
+        else: [notes]
+    end
+
+    defp open_messages(record_id) do
+      [
+        %{
+          "version" => "v0.9.1",
+          "createSurface" => %{"surfaceId" => "notes", "catalogId" => "fake"}
+        },
+        %{
+          "version" => "v0.9.1",
+          "updateDataModel" => %{
+            "surfaceId" => "notes",
+            "path" => "/",
+            "value" => %{"recordId" => record_id}
+          }
+        }
+      ]
+    end
+
+    defp status(surface_id, text) do
+      %{
+        "version" => "v0.9.1",
+        "updateDataModel" => %{"surfaceId" => surface_id, "path" => "/ui/status", "value" => text}
+      }
     end
   end
 

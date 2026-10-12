@@ -80,7 +80,7 @@ defmodule AshAcp.ServerTest do
   # == session/new ===========================================================
 
   test "session/new delegates to the host store and returns its sessionId" do
-    {response, [], state} =
+    {response, [commands], state} =
       Server.handle_message(
         %{
           "jsonrpc" => "2.0",
@@ -97,6 +97,18 @@ defmodule AshAcp.ServerTest do
     # the created session is cached in state with its actor
     session = Map.fetch!(state.sessions, session_id)
     assert session.actor == :operator
+
+    # the palette goes out with the session, not only at the first turn's end
+    assert %{
+             "method" => "session/update",
+             "params" => %{
+               "sessionId" => "sess-1",
+               "update" => %{
+                 "sessionUpdate" => "available_commands_update",
+                 "availableCommands" => [_summarize, _restricted]
+               }
+             }
+           } = commands
   end
 
   # == session/prompt ========================================================
@@ -155,7 +167,7 @@ defmodule AshAcp.ServerTest do
              %{"name" => "FakeHost.Note.restricted", "description" => "Only actors may run this"}
            ] = update["availableCommands"]
 
-    assert update["surface"] == %{"type" => "list", "title" => "Notes"}
+    refute Map.has_key?(update, "surface"), "the deprecated update.surface alias is gone"
     assert update["_meta"]["a2ui"] == %{"type" => "list", "title" => "Notes"}
     assert completed_tool_call["params"]["update"]["status"] == "completed"
 
@@ -266,8 +278,19 @@ defmodule AshAcp.ServerTest do
                    "content" => %{"text" => "Summary: hello"}
                  }
                }
+             },
+             %{
+               "params" => %{
+                 "update" => %{
+                   "sessionUpdate" => "available_commands_update",
+                   "_meta" => %{"a2ui" => last_surface}
+                 }
+               }
              }
            ] = notifications
+
+    # the session's last surface is re-emitted after the replay
+    assert last_surface == %{"type" => "list", "title" => "Notes"}
   end
 
   test "session/load of an unknown session is resource not found" do
@@ -380,7 +403,7 @@ defmodule AshAcp.ServerTest do
   end
 
   test "handle_line orders a turn's notifications before its response" do
-    {[new_response], state} =
+    {[_commands, new_response], state} =
       Server.handle_line(
         ~s({"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/tmp"}}),
         new_state()
@@ -497,14 +520,16 @@ defmodule AshAcp.ServerTest do
 
       assert response["result"] == %{}
 
-      assert [%{"params" => %{"update" => %{"sessionUpdate" => "user_message_chunk"}}}] =
-               notifications
+      assert [
+               %{"params" => %{"update" => %{"sessionUpdate" => "user_message_chunk"}}},
+               %{"params" => %{"update" => %{"sessionUpdate" => "available_commands_update"}}}
+             ] = notifications
     end
 
     test "without an authenticator the check is skipped (trusted boundary rule)" do
       {_, _, _} = session_new()
 
-      {response, [], _} =
+      {response, [_commands], _} =
         Server.handle_message(
           %{
             "jsonrpc" => "2.0",

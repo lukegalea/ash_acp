@@ -22,23 +22,14 @@ defmodule Mix.Tasks.AshAcp.Stdio do
 
   @impl Mix.Task
   def run(_args) do
-    Mix.Task.run("app.start")
-
     # Host application logs must never reach stdout — it is the ACP wire.
-    # Replace the default handler with one writing to stderr at :error: a
-    # chatty dev host (Ecto SQL debug, monitor heartbeats) is capped by the
-    # handler level even when the primary level does not hold, and genuine
-    # errors land on stderr. Two landmines, both bisected live:
-    #   * `:logger.update_handler_config(:default, :set, ...)` silently
-    #     no-ops under Elixir's Logger integration;
-    #   * changing `type` on a started handler raises :illegal_config_change,
-    #     so the handler must be removed and re-added. Removal is safe here —
-    #     the stdout io server survives it (verified under a Port parent).
-    :logger.remove_handler(:default)
+    # Divert them before the host boots, so boot-time logs land on stderr
+    # too (run_stdio/1 re-asserts it, idempotently).
+    AshAcp.Endpoint.keep_stdout_pure()
 
-    :logger.add_handler(:default, :logger_std_h, %{
-      config: %{type: :standard_error, level: :error}
-    })
+    # The whole host, deliberately (iron law #23's exception): every ACP
+    # method runs the host's Ash actions, repos and policies.
+    Mix.Task.run("app.start")
 
     AshAcp.run_stdio()
   end

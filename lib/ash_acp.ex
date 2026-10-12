@@ -24,9 +24,12 @@ defmodule AshAcp do
   * `session/prompt` — `AshAcp.PromptTarget` resolves the prompt to a declared
     Ash action; the library executes it with the session actor and
     `authorize?: true`, streaming `session/update` notifications.
+  * `session/list` — lists the host's sessions, when the store exports `list/1`.
   * `session/cancel` — cancels the in-flight prompt (`stopReason: "cancelled"`).
   * `session/request_permission` — outbound request mapped onto the host
     `AshAcp.PermissionRequest` seam (ADR 0015: approvals live in Ash).
+  * `_`-prefixed extension methods — routed to the host's
+    `AshAcp.ExtMethods` and advertised under `agentCapabilities._meta.ash`.
 
   ## Host seams
 
@@ -35,7 +38,9 @@ defmodule AshAcp do
   | `AshAcp.SessionStore` | Session persistence (the host's session resource). |
   | `AshAcp.PromptTarget` | Prompt text → Ash action + inputs. |
   | `AshAcp.PermissionRequest` | Approvals mapped onto the host approval resource. |
-  | `AshAcp.SurfaceProvider` (optional) | Opaque A2UI surface descriptors carried under the update's `surface` field. |
+  | `AshAcp.SurfaceProvider` (optional) | Opaque A2UI surface descriptors carried under the update's `_meta.a2ui`. |
+  | `AshAcp.ExtMethods` (optional) | `_`-prefixed extension methods (`_ash/surface/open`, `_a2ui/action`, ...). |
+  | `AshAcp.Authenticator` (optional) | The connection's actor. |
 
   Configure them in application env:
 
@@ -44,7 +49,10 @@ defmodule AshAcp do
         prompt_target: MyApp.AcpPromptTarget,
         permission_request: MyApp.AcpPermissionRequest,
         surface_provider: MyApp.AcpSurfaceProvider,
-        agent_info: %{name: "my_app", version: "1.0.0"}
+        ext_methods: MyApp.AcpExt,
+        agent_info: %{name: "my_app", version: "1.0.0"},
+        # the command palette, pruned per actor with Ash.can?/3
+        candidate_actions: [{MyApp.Helpdesk.Ticket, :summarize}]
 
   Then run on stdio (see `AshAcp.run_stdio/1` and `mix ash_acp.stdio`) or mount
   `AshAcp.Plug` in a Phoenix endpoint.
@@ -71,7 +79,7 @@ defmodule AshAcp do
   @spec acp_version() :: pos_integer()
   def acp_version, do: @acp_version
 
-  @version "0.1.0"
+  @version "0.2.0"
 
   @doc false
   @spec library_version() :: String.t()
@@ -82,20 +90,26 @@ defmodule AshAcp do
     :prompt_target,
     :permission_request,
     :surface_provider,
+    :ext_methods,
     :agent_info,
-    :authenticate
+    :authenticate,
+    :candidate_actions
   ]
 
   @doc """
   Resolves the effective configuration: the given overrides on top of
-  `:ash_acp` application env.
+  `:ash_acp` application env. Every documented key is carried —
+  `:candidate_actions` defaults to `[]`, `:agent_info` to this library's.
   """
   @spec config(keyword() | map()) :: %{
           optional(:session_store) => module() | nil,
           optional(:prompt_target) => module() | nil,
           optional(:permission_request) => module() | nil,
           optional(:surface_provider) => module() | nil,
-          optional(:agent_info) => map() | nil
+          optional(:ext_methods) => module() | nil,
+          optional(:authenticate) => module() | nil,
+          optional(:agent_info) => map(),
+          optional(:candidate_actions) => list()
         }
   def config(overrides \\ []) do
     overrides = Map.new(overrides)
@@ -107,6 +121,7 @@ defmodule AshAcp do
       nil -> default_agent_info()
       info when is_map(info) -> info
     end)
+    |> Map.update(:candidate_actions, [], &(&1 || []))
   end
 
   @doc """

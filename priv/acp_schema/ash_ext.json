@@ -1,0 +1,92 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/lukegalea/ash_acp/priv/acp_schema/ash_ext.json",
+  "title": "ash_acp extension conventions",
+  "description": "Wire shapes of the `ash` ACP extension methods (ACP Extensibility: `_`-prefixed methods, advertised under `_meta`). The library routes them to the host's AshAcp.ExtMethods; these shapes are the convention hosts and clients share. A2UI payloads (`a2ui`) are opaque here: the same shape ash_acp carries under `session/update` `update._meta.a2ui` (an A2UI v0.9.1 message list, or one descriptor object).",
+  "x-methods": {
+    "_ash/surfaces/list": {"params": "SurfacesListParams", "result": "SurfacesListResult"},
+    "_ash/surface/open": {"params": "SurfaceOpenParams", "result": "SurfaceOpenResult"},
+    "_a2ui/action": {"params": "A2uiActionParams", "result": "A2uiActionResult"}
+  },
+  "$defs": {
+    "AshCapabilities": {
+      "description": "`initialize` result: `agentCapabilities._meta.ash` (canonical) and `_meta.ash` (mirror).",
+      "type": "object",
+      "required": ["extMethods"],
+      "properties": {
+        "extMethods": {"type": "array", "items": {"type": "string", "pattern": "^_"}},
+        "surfaces": {"type": "array", "items": {"$ref": "#/$defs/SurfaceEntry"}}
+      },
+      "additionalProperties": true
+    },
+    "SurfaceEntry": {
+      "description": "One openable surface, already pruned for the actor.",
+      "type": "object",
+      "required": ["id", "title"],
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "title": {"type": "string"},
+        "description": {"type": "string"},
+        "group": {"type": "string"},
+        "recordScoped": {"type": "boolean", "description": "true when the surface needs a recordId to open"}
+      },
+      "additionalProperties": true
+    },
+    "A2ui": {
+      "description": "Opaque A2UI payload: a list of A2UI v0.9.1 server-to-client messages, or a single descriptor object.",
+      "anyOf": [{"type": "array", "items": {"type": "object"}}, {"type": "object"}]
+    },
+    "SurfacesListParams": {
+      "type": "object",
+      "properties": {"sessionId": {"type": "string"}, "_meta": {"type": ["object", "null"]}},
+      "additionalProperties": true
+    },
+    "SurfacesListResult": {
+      "type": "object",
+      "required": ["surfaces"],
+      "properties": {"surfaces": {"type": "array", "items": {"$ref": "#/$defs/SurfaceEntry"}}},
+      "additionalProperties": true
+    },
+    "SurfaceOpenParams": {
+      "type": "object",
+      "required": ["sessionId", "surface"],
+      "properties": {
+        "sessionId": {"type": "string"},
+        "surface": {"type": "string", "description": "a SurfaceEntry id"},
+        "recordId": {"type": ["string", "null"]},
+        "query": {"type": ["object", "null"], "description": "A2UI query state (filters, sort, page) for the surface"},
+        "_meta": {"type": ["object", "null"]}
+      },
+      "additionalProperties": true
+    },
+    "SurfaceOpenResult": {
+      "type": "object",
+      "required": ["surfaceId", "a2ui"],
+      "properties": {"surfaceId": {"type": "string"}, "a2ui": {"$ref": "#/$defs/A2ui"}},
+      "additionalProperties": true
+    },
+    "A2uiActionParams": {
+      "type": "object",
+      "required": ["sessionId", "surfaceId", "action"],
+      "properties": {
+        "sessionId": {"type": "string"},
+        "surfaceId": {"type": "string"},
+        "action": {
+          "description": "The A2UI v0.9.1 client-to-server action: the inner action object ({name, context, sourceComponentId?, timestamp?}) or the full {version, action} envelope.",
+          "type": "object"
+        },
+        "_meta": {"type": ["object", "null"]}
+      },
+      "additionalProperties": true
+    },
+    "A2uiActionResult": {
+      "type": "object",
+      "required": ["outcome", "a2ui"],
+      "properties": {
+        "outcome": {"enum": ["applied", "denied"]},
+        "a2ui": {"$ref": "#/$defs/A2ui"}
+      },
+      "additionalProperties": true
+    }
+  }
+}

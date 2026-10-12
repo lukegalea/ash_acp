@@ -18,7 +18,7 @@ data on the host's approval resource, never an authorization authority.
 
 ## Host integration steps
 
-1. **Implement the four seams** (behaviours, host-side modules):
+1. **Implement the seams** (behaviours, host-side modules):
    * `AshAcp.SessionStore` — back it with your session resource. The session
      must carry `session_id`, `actor`, and `messages` (list of
      `%{role: :user | :agent, text: binary}`). The **actor is the only
@@ -31,10 +31,19 @@ data on the host's approval resource, never an authorization authority.
      `{:pending, ref}` + optional `resolve/3` mapping the client's outcome
      back onto that resource.
    * `AshAcp.SurfaceProvider` (optional) — return your A2UI descriptor JSON;
-     it is carried verbatim under `update.surface`. AshAcp never generates,
-     validates or re-defines A2UI payloads.
+     it is carried verbatim under `update._meta.a2ui`. `meta.reason` is
+     `:session_new | :session_load | :turn_end` — on `:session_load` return
+     the session's last surface. AshAcp never generates, validates or
+     re-defines A2UI payloads.
+   * `AshAcp.ExtMethods` (optional) — `_`-prefixed extension methods
+     (`_ash/surfaces/list`, `_ash/surface/open`, `_a2ui/action`; shapes in
+     `priv/acp_schema/ash_ext.json`). Run Ash with `ctx.actor` and
+     `authorize?: true`; return `{:request_permission, spec}` for a
+     consequential operation — never decide approval yourself.
+   * `AshAcp.SessionStore.list/1` (optional) — enables `session/list`.
 2. **Configure** `:ash_acp` application env (`session_store`,
-   `prompt_target`, `permission_request`, `surface_provider`, `agent_info`),
+   `prompt_target`, `permission_request`, `surface_provider`, `ext_methods`,
+   `authenticate`, `agent_info`) — `AshAcp.config/0` carries every key,
    and optionally `candidate_actions` — the list your clients see, pruned
    per actor by `Ash.can?/3`. Hide an action with a policy, not with this
    list.
