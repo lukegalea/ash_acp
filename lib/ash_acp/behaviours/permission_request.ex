@@ -6,15 +6,24 @@ defmodule AshAcp.PermissionRequest do
   @moduledoc """
   Host-implemented seam for approvals (ADR 0015: approvals live in Ash).
 
-  A prompt whose action needs approval — because the host says so, or because
-  Ash's policies deny the actor — is surfaced to the ACP client as a
-  `session/request_permission` request. The host maps that flow onto its own
-  approval resource through this behaviour; the library holds no approval
-  model of its own and derives no authorization decisions from option ids.
+  A prompt whose action needs approval — because the host says so — is
+  surfaced to the ACP client as a `session/request_permission` request. The
+  host maps that flow onto its own approval resource through this behaviour;
+  the library holds no approval model of its own and derives no
+  authorization decisions from option ids.
+
+  An action Ash's policies refuse the actor never reaches this seam: the
+  server checks it with `Ash.can/3` first (same actor, input and tenant as
+  the run) and ends the turn refused, so nobody is asked to approve
+  something that cannot run. Only a definite refusal short-circuits; when
+  `Ash.can/3` cannot decide up front, `request/3` is called as usual. A run
+  that Ash still refuses after approval ends the turn refused too — it is
+  not put back to the client.
 
   ## Flow
 
-  1. The server calls `request/3` before executing a resolved action:
+  1. The server calls `request/3` before executing a resolved action that
+     the up-front check did not refuse:
      * `{:approved, approval}` — already approved (e.g. `allow_always` was
        recorded on the host's approval resource). The library executes the
        action immediately; `approval` is opaque host metadata carried in the
@@ -32,6 +41,11 @@ defmodule AshAcp.PermissionRequest do
   3. `{:approved, _}` executes the action — with the session actor and
      `authorize?: true`. Approval never bypasses Ash policies; it only
      unblocks the attempt.
+
+  `resolve/3` is only ever called with a `request_ref` your `request/3`
+  returned (since 0.3.0 the library no longer issues the synthetic
+  `{:ash_denied, resource, action}` ref). Denying any ref you do not
+  recognise remains the right catch-all.
   """
 
   @callback request(session :: term(), action_spec :: map(), inputs :: map()) ::

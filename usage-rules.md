@@ -29,7 +29,9 @@ data on the host's approval resource, never an authorization authority.
    * `AshAcp.PermissionRequest` — `request/3` consults your approval
      resource (ADR 0015): `{:approved, record}`, `{:denied}`, or
      `{:pending, ref}` + optional `resolve/3` mapping the client's outcome
-     back onto that resource.
+     back onto that resource. It is only asked about actions `Ash.can/3`
+     does not definitely refuse — a policy refusal ends the turn before any
+     approval exists, and is never put to the client.
    * `AshAcp.SurfaceProvider` (optional) — return your A2UI descriptor JSON;
      it is carried verbatim under `update._meta.a2ui`. `meta.reason` is
      `:session_new | :session_load | :turn_end` — on `:session_load` return
@@ -39,14 +41,24 @@ data on the host's approval resource, never an authorization authority.
      (`_ash/surfaces/list`, `_ash/surface/open`, `_a2ui/action`; shapes in
      `priv/acp_schema/ash_ext.json`). Run Ash with `ctx.actor` and
      `authorize?: true`; return `{:request_permission, spec}` for a
-     consequential operation — never decide approval yourself.
+     consequential operation — never decide approval yourself. Put the Ash
+     call you will make in the spec (`resource:`, `action:`, `inputs:`,
+     `tenant:`) so the library can refuse a policy-forbidden one up front
+     (`permission: :denied, denied_by: :policy`). `_a2ui/action` answers
+     `outcome: "applied"` **only** when the write succeeded; a refused,
+     invalid or errored write is `"failed"` with
+     `AshAcp.ExtMethods.action_failed(error, a2ui)` (a safe `{kind,
+     message}` — never record contents); a declined approval is
+     `"denied"`.
    * `AshAcp.SessionStore.list/1` (optional) — enables `session/list`.
 2. **Configure** `:ash_acp` application env (`session_store`,
    `prompt_target`, `permission_request`, `surface_provider`, `ext_methods`,
    `authenticate`, `agent_info`) — `AshAcp.config/0` carries every key,
    and optionally `candidate_actions` — the list your clients see, pruned
    per actor by `Ash.can?/3`. Hide an action with a policy, not with this
-   list.
+   list. A palette computed at runtime is `{m, f, a}` (or a zero-arity fun):
+   evaluated per palette, so every transport — `mix ash_acp.stdio`
+   included — sends it without a hand-built config.
 3. **Pick a transport**: `AshAcp.run_stdio/0` / `mix ash_acp.stdio` for the
    ACP-native stdio loop, or mount `AshAcp.Plug` under your Phoenix
    endpoint. Neither contains business logic; do not add any there.

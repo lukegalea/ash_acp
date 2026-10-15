@@ -193,6 +193,64 @@ defmodule AshAcp.ServerTest do
     refute "FakeHost.Note.restricted" in names
   end
 
+  describe "a palette computed at runtime" do
+    defp palette_names(config) do
+      {_, [commands], _} =
+        Server.handle_message(
+          %{
+            "jsonrpc" => "2.0",
+            "id" => 2,
+            "method" => "session/new",
+            "params" => %{"cwd" => "/tmp"}
+          },
+          Server.new(config)
+        )
+
+      assert commands["params"]["update"]["sessionUpdate"] == "available_commands_update"
+      Enum.map(commands["params"]["update"]["availableCommands"], & &1["name"])
+    end
+
+    test "candidate_actions may be an {m, f, a} the host evaluates when the palette is built" do
+      names =
+        palette_names(FakeHost.config(candidate_actions: {FakeHost, :candidate_actions, []}))
+
+      assert names == ["FakeHost.Note.summarize", "FakeHost.Note.restricted"]
+    end
+
+    test "candidate_actions may be a zero-arity function" do
+      names = palette_names(FakeHost.config(candidate_actions: &FakeHost.candidate_actions/0))
+      assert names == ["FakeHost.Note.summarize", "FakeHost.Note.restricted"]
+    end
+
+    test "a computed palette is still pruned per actor" do
+      FakeHost.set_actor(nil)
+
+      names =
+        palette_names(FakeHost.config(candidate_actions: {FakeHost, :candidate_actions, []}))
+
+      assert names == ["FakeHost.Note.summarize"]
+    end
+
+    test "AshAcp.config/0 carries an {m, f, a} palette from app env unevaluated" do
+      Application.put_env(:ash_acp, :candidate_actions, {FakeHost, :candidate_actions, []})
+      on_exit(fn -> Application.delete_env(:ash_acp, :candidate_actions) end)
+
+      assert AshAcp.config().candidate_actions == {FakeHost, :candidate_actions, []}
+    end
+
+    test "a failing palette provider is logged and the session still opens" do
+      log =
+        capture_log(fn ->
+          assert palette_names(
+                   FakeHost.config(candidate_actions: fn -> raise "registry down" end)
+                 ) ==
+                   []
+        end)
+
+      assert log =~ "candidate_actions"
+    end
+  end
+
   test "unresolvable prompt ends the turn with refusal" do
     FakeHost.set_prompt_mode({:ok, :unresolvable})
     {_, _, state} = session_new()

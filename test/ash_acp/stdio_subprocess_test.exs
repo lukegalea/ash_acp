@@ -94,7 +94,93 @@ defmodule AshAcp.StdioSubprocessTest do
     assert problems == [], "stdout carried non-ndjson lines:\n#{Enum.join(problems, "\n")}"
   end
 
+  @tag timeout: 120_000
+  test "mix ash_acp.stdio sends the palette after session/new, computed at runtime" do
+    mix = System.find_executable("mix")
+    assert mix, "mix must be on PATH for the subprocess regression tests"
+
+    # A host whose palette is derived at runtime (a surface registry, say)
+    # names it in app env as {m, f, a} — the only way `mix ash_acp.stdio`,
+    # which builds its config from app env alone, can carry it.
+    host_code = """
+    FakeHost.start()
+
+    for {key, value} <- [
+          session_store: FakeHost.SessionStore,
+          prompt_target: FakeHost.PromptTarget,
+          permission_request: FakeHost.PermissionRequest,
+          candidate_actions: {FakeHost, :candidate_actions, []}
+        ],
+        do: Application.put_env(:ash_acp, key, value)
+
+    Mix.Task.run("ash_acp.stdio")
+    """
+
+    port = spawn_via(mix, ["run", "-e", host_code])
+
+    Port.command(
+      port,
+      ~s({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":#{AshAcp.acp_version()}}}) <>
+        "\n"
+    )
+
+    _init = await_matching_line(port, &(&1 =~ "protocolVersion"), 90_000)
+
+    Port.command(
+      port,
+      ~s({"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/tmp","mcpServers":[]}}) <>
+        "\n"
+    )
+
+    # the palette precedes the session/new response, exactly as over HTTP
+    {lines, response} = await_lines_until(port, &(&1 =~ ~s("id":2)), 30_000)
+    Port.close(port)
+
+    assert Jason.decode!(response)["result"]["sessionId"] == "sess-1"
+
+    palette =
+      lines
+      |> Enum.map(&Jason.decode!/1)
+      |> Enum.find(
+        &(get_in(&1, ["params", "update", "sessionUpdate"]) == "available_commands_update")
+      )
+
+    assert palette, "no available_commands_update preceded the session/new response"
+
+    assert Enum.map(palette["params"]["update"]["availableCommands"], & &1["name"]) == [
+             "FakeHost.Note.summarize",
+             "FakeHost.Note.restricted"
+           ]
+  end
+
   # == plumbing ==============================================================
+
+  # Like await_matching_line/3, but also returns the stdout lines seen before
+  # the match (every one of which must be ndjson).
+  defp await_lines_until(port, predicate, timeout) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    collect_until(port, predicate, deadline, [])
+  end
+
+  defp collect_until(port, predicate, deadline, seen) do
+    if System.monotonic_time(:millisecond) >= deadline do
+      Port.close(port)
+      fail("timed out waiting for a matching stdout line; got: #{inspect(Enum.reverse(seen))}")
+    end
+
+    receive do
+      {^port, {:data, {:eol, line}}} ->
+        if predicate.(line),
+          do: {Enum.reverse(seen), line},
+          else: collect_until(port, predicate, deadline, [line | seen])
+
+      {^port, {:exit_status, status}} ->
+        Port.close(port)
+        fail("child exited with status #{status}; got: #{inspect(Enum.reverse(seen))}")
+    after
+      100 -> collect_until(port, predicate, deadline, seen)
+    end
+  end
 
   defp spawn_stdio_task do
     mix = System.find_executable("mix")

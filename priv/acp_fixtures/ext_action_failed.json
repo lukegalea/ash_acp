@@ -1,0 +1,202 @@
+{
+  "description": "_a2ui/action writes that do not happen answer outcome failed with a safe error, never applied: a write the actor's policies refuse is failed/forbidden at once (no approval, no session/request_permission); an approved write whose input is invalid is failed/invalid and its tool call fails",
+  "expected": [
+    {
+      "id": 1,
+      "jsonrpc": "2.0",
+      "result": {
+        "_meta": {
+          "ash": {
+            "extMethods": [
+              "_ash/surfaces/list",
+              "_ash/surface/open",
+              "_a2ui/action"
+            ],
+            "surfaces": [
+              {
+                "group": "Workspace",
+                "id": "notes",
+                "title": "Notes"
+              }
+            ]
+          }
+        },
+        "agentCapabilities": {
+          "_meta": {
+            "ash": {
+              "extMethods": [
+                "_ash/surfaces/list",
+                "_ash/surface/open",
+                "_a2ui/action"
+              ],
+              "surfaces": [
+                {
+                  "group": "Workspace",
+                  "id": "notes",
+                  "title": "Notes"
+                }
+              ]
+            }
+          },
+          "loadSession": true,
+          "mcpCapabilities": {
+            "http": false,
+            "sse": false
+          },
+          "promptCapabilities": {
+            "audio": false,
+            "embeddedContext": false,
+            "image": false
+          },
+          "sessionCapabilities": {
+            "list": {}
+          }
+        },
+        "agentInfo": {
+          "name": "fake_host",
+          "title": "Fake Host",
+          "version": "1.0.0"
+        },
+        "authMethods": [],
+        "protocolVersion": 1
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "sess-1",
+        "update": {
+          "_meta": {
+            "a2ui": {
+              "title": "Notes",
+              "type": "list"
+            }
+          },
+          "availableCommands": [
+            {
+              "description": "Summarize the given text",
+              "name": "FakeHost.Note.summarize"
+            }
+          ],
+          "sessionUpdate": "available_commands_update"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "jsonrpc": "2.0",
+      "result": {
+        "sessionId": "sess-1"
+      }
+    },
+    {
+      "id": 3,
+      "jsonrpc": "2.0",
+      "result": {
+        "a2ui": [
+          {
+            "updateDataModel": {
+              "path": "/ui/status",
+              "surfaceId": "notes",
+              "value": "not allowed"
+            },
+            "version": "v0.9.1"
+          }
+        ],
+        "error": {
+          "kind": "forbidden",
+          "message": "You are not allowed to do this."
+        },
+        "outcome": "failed"
+      }
+    },
+    {
+      "id": "srv-1",
+      "jsonrpc": "2.0",
+      "method": "session/request_permission",
+      "params": {
+        "_meta": {
+          "requestRef": "approval-ref-1"
+        },
+        "options": [
+          {
+            "kind": "allow_once",
+            "name": "Allow once",
+            "optionId": "allow_once"
+          },
+          {
+            "kind": "allow_always",
+            "name": "Allow always",
+            "optionId": "allow_always"
+          },
+          {
+            "kind": "reject_once",
+            "name": "Reject once",
+            "optionId": "reject_once"
+          }
+        ],
+        "sessionId": "sess-1",
+        "toolCall": {
+          "kind": "execute",
+          "status": "pending",
+          "title": "Publish bulletin",
+          "toolCallId": "tc-1"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "sess-1",
+        "update": {
+          "content": [
+            {
+              "content": {
+                "text": "Action failed",
+                "type": "text"
+              },
+              "type": "content"
+            }
+          ],
+          "sessionUpdate": "tool_call_update",
+          "status": "failed",
+          "toolCallId": "tc-1"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "jsonrpc": "2.0",
+      "result": {
+        "a2ui": [
+          {
+            "updateDataModel": {
+              "path": "/ui/status",
+              "surfaceId": "notes",
+              "value": "failed"
+            },
+            "version": "v0.9.1"
+          }
+        ],
+        "error": {
+          "kind": "invalid",
+          "message": "Invalid input: text."
+        },
+        "outcome": "failed"
+      }
+    }
+  ],
+  "input": [
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":1}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"session/new\",\"params\":{\"cwd\":\"/home/guest\"}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"_a2ui/action\",\"params\":{\"sessionId\":\"sess-1\",\"surfaceId\":\"notes\",\"action\":{\"name\":\"restricted\",\"context\":{\"text\":\"hello all\"}}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"_a2ui/action\",\"params\":{\"sessionId\":\"sess-1\",\"surfaceId\":\"notes\",\"action\":{\"name\":\"publish\",\"context\":{\"text\":\"\"}}}}",
+    "{\"jsonrpc\":\"2.0\",\"id\":\"srv-1\",\"result\":{\"outcome\":{\"outcome\":\"selected\",\"optionId\":\"allow_once\"}}}"
+  ],
+  "setup": {
+    "actor": null,
+    "permission": "pending"
+  }
+}

@@ -70,14 +70,23 @@ config :ash_acp,
   surface_provider: MyApp.AcpSurfaceProvider,
   ext_methods: MyApp.AcpExt,
   agent_info: %{name: "my_app", version: "1.0.0"},
+  # a list, or {m, f, a} / a zero-arity fun evaluated per palette
   candidate_actions: [{MyApp.Helpdesk.Ticket, :summarize}]
 ```
+
+**Policy refusals are never put to the client.** Before a consequential
+action reaches `AshAcp.PermissionRequest`, the server checks it with
+`Ash.can/3` (same actor, input and tenant as the run). A definite refusal
+ends the turn `refusal` with a failed `Not permitted` tool call — no
+approval is recorded and no `session/request_permission` goes out. When the
+check cannot decide up front, the flow is unchanged, and the run itself is
+always authorized with `authorize?: true`.
 
 ## Extension methods
 
 ACP lets an agent expose custom methods whose names start with `_`. A host
 implements `AshAcp.ExtMethods`; the library routes the listed methods to
-`handle/3` with `%{session, session_id, actor, permission}`, carries the
+`handle/3` with `%{session, session_id, actor, permission, denied_by}`, carries the
 result verbatim, emits any returned `AshAcp.Updates` as `session/update`s,
 and turns `{:request_permission, spec}` into the host's own
 `AshAcp.PermissionRequest` decision — pending ones become a
@@ -92,6 +101,13 @@ again with the outcome. Initialize advertises them:
 conventions — `_ash/surfaces/list`, `_ash/surface/open`, `_a2ui/action` —
 are specified by `priv/acp_schema/ash_ext.json`, and the golden fixtures are
 validated against it.
+
+`_a2ui/action` answers one of three outcomes: `applied` (the write
+succeeded — only then), `denied` (an approval was declined) or `failed`
+(refused by policy, invalid input, or an error), which carries
+`error: {kind: "forbidden" | "invalid" | "error", message}`. Build it with
+`AshAcp.ExtMethods.action_failed/2`, which classifies an Ash error and
+writes a message free of record contents, input values and stack traces.
 
 ## Transports
 
@@ -129,8 +145,8 @@ seam becomes a `-32603` for the offending request plus a `Logger.error` with
 the stacktrace), and contract-violating returns from
 `AshAcp.PermissionRequest.request/3` / `resolve/3` fail the affected prompt
 loudly instead of stranding the client. On stdio, `run_stdio/1` diverts
-logger output and the group leader to stderr — stdout carries nothing but
-ndjson.
+logger output to stderr (the group leader is left alone) — stdout carries
+nothing but ndjson.
 
 ## What is deliberately not here
 

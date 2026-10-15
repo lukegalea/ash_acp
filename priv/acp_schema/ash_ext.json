@@ -80,13 +80,28 @@
       "additionalProperties": true
     },
     "A2uiActionResult": {
+      "description": "`applied`: the action ran and succeeded (only then). `denied`: an approval was declined; nothing ran. `failed`: refused by policy, invalid input, or an error; nothing (or not all of it) happened, and `error` says why.",
       "type": "object",
       "required": ["outcome", "a2ui"],
       "properties": {
-        "outcome": {"enum": ["applied", "denied"]},
+        "outcome": {"enum": ["applied", "denied", "failed"]},
+        "error": {"$ref": "#/$defs/A2uiActionError"},
         "a2ui": {"$ref": "#/$defs/A2ui"}
       },
+      "if": {"properties": {"outcome": {"const": "failed"}}, "required": ["outcome"]},
+      "then": {"required": ["error"]},
+      "else": {"not": {"required": ["error"]}},
       "additionalProperties": true
+    },
+    "A2uiActionError": {
+      "description": "Why a write failed, safe to show: a kind and a short human message. Never record contents, input values, stack traces or credentials.",
+      "type": "object",
+      "required": ["kind", "message"],
+      "properties": {
+        "kind": {"enum": ["forbidden", "invalid", "error"], "description": "forbidden: the actor's policies refuse it; invalid: the input does not validate; error: anything else"},
+        "message": {"type": "string", "minLength": 1, "maxLength": 500}
+      },
+      "additionalProperties": false
     }
   }
 }
