@@ -40,8 +40,9 @@ data on the host's approval resource, never an authorization authority.
    * `AshAcp.Authenticator` (optional, configured as `authenticate:`) —
      `authenticate/1` gets the params of `initialize`, `session/new` and
      `session/load`; `{:ok, actor}` makes that actor the session's actor,
-     `{:error, _}` answers `-32000`. With it configured, `session/load` by a
-     different actor than the session's owner is `-32002`. Without it the
+     `{:error, _}` answers `-32000`. With it configured, `session/load` of a
+     session that has an owner, by a different authenticated actor, is
+     `-32002` (sessions stored without an owner are not checked). Without it the
      server authenticates nothing and must run behind a trusted boundary.
    * `AshAcp.SurfaceProvider` (optional) — return your A2UI descriptor JSON;
      it is carried verbatim under `update._meta.a2ui`. `meta.reason` is
@@ -101,9 +102,10 @@ data on the host's approval resource, never an authorization authority.
   schema's (`availableCommands`, `sessionId`, `stopReason`); Elixir-side
   names may read naturally (`available_actions`). Do not invent new
   `sessionUpdate` types — unknown ones degrade clients.
-* **Money never becomes a float.** Values on the wire are stringified:
-  `Decimal`s and money amounts stay exact strings, dates and times are
-  ISO8601, unknown structs become inspect text.
+* **Money never becomes a float.** Values on the wire are stringified: a
+  `Decimal` is its exact string, a money value is
+  `{"amount": "<exact string>", "currency": "<code>"}`, dates and times are
+  ISO8601, other unknown structs become inspect text.
 * **Ordering is part of the contract**: a turn's notifications precede the
   response that closes it; `handle_message` returns them in that order and
   transports write them in that order.
