@@ -30,8 +30,9 @@ defmodule FakeHost.Note do
   @moduledoc """
   The fake host's one resource: Simple data layer (no Postgres), policy
   authorizer backed by simple_sat. `summarize` is anyone's action;
-  `restricted` requires an actor; `gated` follows `FakeHost.GateOpen` —
-  that is the whole authorization surface the tests exercise.
+  `restricted` requires an actor; `gated` follows `FakeHost.GateOpen`;
+  `edit_note` is row-scoped (the actor's `name` owns the note) — that is the
+  whole authorization surface the tests exercise.
   """
   use Ash.Resource,
     domain: FakeHost.Domain,
@@ -42,6 +43,7 @@ defmodule FakeHost.Note do
     uuid_primary_key :id
     attribute :title, :string, public?: true
     attribute :body, :string, public?: true
+    attribute :owner, :string
 
     # money-adjacent columns must serialize as STRINGS — a float round-trip
     # silently changes values (iron law #04)
@@ -66,6 +68,11 @@ defmodule FakeHost.Note do
     create :create_note do
       description "Create a note (not a v1 ACP surface)"
       accept [:title, :body]
+    end
+
+    update :edit_note do
+      description "Edit one's own note (a row-scoped write)"
+      accept [:title]
     end
 
     action :summarize, :string do
@@ -120,6 +127,10 @@ defmodule FakeHost.Note do
 
     policy action(:gated) do
       authorize_if FakeHost.GateOpen
+    end
+
+    policy action(:edit_note) do
+      authorize_if expr(owner == ^actor(:name))
     end
 
     policy always() do

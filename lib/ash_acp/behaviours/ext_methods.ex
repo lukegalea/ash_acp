@@ -65,7 +65,10 @@ defmodule AshAcp.ExtMethods do
     plus whatever the host's seam reads, e.g. `:resource`/`:action`); the
     library adds `ext: %{method: m, params: p}`. When the spec names the
     Ash call the handler will make — `:resource` and `:action`, plus the
-    `:inputs` and `:tenant` it will pass — the library first checks it with
+    `:inputs` and `:tenant` it will pass, and for an update or destroy the
+    `:record` it will change (without one, an update or destroy is not
+    checked up front: a filter policy cannot be judged against a blank
+    record) — the library first checks it with
     `Ash.can/3` as the handler's `:actor`: a definite refusal skips the
     approval seam and the client entirely (`permission: :denied,
     denied_by: :policy`); `:maybe` or an error proceeds as below. Approved

@@ -673,6 +673,13 @@ defmodule AshAcp.Server do
   # An extension call's spec names the resource, action, inputs and tenant
   # of the call the handler will make; without `:resource`/`:action` there is
   # nothing to check.
+  #
+  # An update or destroy is checked against the record it will change, which
+  # only the host has (`:record`). Without one there is nothing to check:
+  # `Ash.can/3` would judge a blank struct of the resource, and a filter
+  # policy (`owner_id == ^actor(:id)`, a team or tenant scope) is definitely
+  # false against nil columns — the actor's own record would be refused up
+  # front.
   defp ext_source(%{resource: resource, action: action} = spec)
        when is_atom(resource) and is_atom(action) and not is_nil(action) do
     inputs = Map.get(spec, :inputs) || %{}
@@ -681,11 +688,17 @@ defmodule AshAcp.Server do
       nil -> nil
       :action -> Ash.ActionInput.for_action(resource, action, inputs)
       :read -> Ash.Query.for_read(resource, action, inputs)
-      _write -> {resource, action, inputs}
+      :create -> {resource, action, inputs}
+      _update_or_destroy -> record_source(spec, resource, action, inputs)
     end
   end
 
   defp ext_source(_spec), do: nil
+
+  defp record_source(%{record: %{__struct__: resource} = record}, resource, action, inputs),
+    do: {record, action, inputs}
+
+  defp record_source(_spec, _resource, _action, _inputs), do: nil
 
   # A turn that the host's approval seam already denied: no execution, a
   # failed tool call update, and a refusal stop reason.
