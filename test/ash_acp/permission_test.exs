@@ -304,84 +304,85 @@ defmodule AshAcp.PermissionTest do
     end
   end
 
-  describe "Ash policy denials become permission requests" do
-    test "unauthorized prompt surfaces session/request_permission, not a wire error" do
-      # anonymous actor cannot run :restricted
-      FakeHost.set_actor(nil)
-      FakeHost.set_prompt_mode({:ok, :restricted})
-      FakeHost.set_permission_mode({:approved, nil})
-      {_, _, state} = session_new()
-
-      {response, [outbound], state} =
-        Server.handle_message(
-          %{
-            "jsonrpc" => "2.0",
-            "id" => 3,
-            "method" => "session/prompt",
-            "params" => %{
-              "sessionId" => "sess-1",
-              "prompt" => [%{"type" => "text", "text" => "try"}]
-            }
-          },
-          state
-        )
-
-      # not an error — a permission request, and the turn stays open
-      # (no prompt response until the client resolves)
-      assert response == nil
-      assert state.in_flight == %{"sess-1" => 3}
-      assert outbound["method"] == "session/request_permission"
-      assert outbound["params"]["toolCall"]["title"] == "Restricted op"
+  describe "Ash policy refusals never ask the client" do
+    defp prompt(state, text \\ "try") do
+      Server.handle_message(
+        %{
+          "jsonrpc" => "2.0",
+          "id" => 3,
+          "method" => "session/prompt",
+          "params" => %{
+            "sessionId" => "sess-1",
+            "prompt" => [%{"type" => "text", "text" => text}]
+          }
+        },
+        state
+      )
     end
 
-    test "approving an unauthorized prompt still cannot bypass Ash policies" do
-      # host seam approves everything; the anonymous actor still cannot run
-      # :restricted because approval never overrides Ash policies.
-      defmodule ApprovingPermissions do
-        @moduledoc false
-        @behaviour AshAcp.PermissionRequest
+    defp not_permitted?(notification) do
+      update = notification["params"]["update"]
 
-        def request(_s, _a, _i), do: {:pending, "ref"}
+      update["sessionUpdate"] == "tool_call_update" and update["status"] == "failed" and
+        update["content"] == [
+          %{"type" => "content", "content" => %{"type" => "text", "text" => "Not permitted"}}
+        ]
+    end
 
-        def resolve(_ref, _outcome, _session), do: {:approved, nil}
-      end
-
+    test "a write the actor's policies refuse is refused up front: no approval, no prompt" do
+      # anonymous actor cannot run :restricted; the host seam would pend
       FakeHost.set_actor(nil)
       FakeHost.set_prompt_mode({:ok, :restricted})
+      FakeHost.set_permission_mode({:pending, "never-used"})
+      FakeHost.set_request_probe(self())
+      {_, _, state} = session_new()
 
-      config = FakeHost.config(permission_request: ApprovingPermissions)
+      {response, notifications, state} = prompt(state)
 
-      {_, _, state} =
-        Server.handle_message(
-          %{
-            "jsonrpc" => "2.0",
-            "id" => 2,
-            "method" => "session/new",
-            "params" => %{"cwd" => "/tmp"}
-          },
-          Server.new(config)
-        )
+      # the denial straight away: a refusal, no session/request_permission,
+      # and the host's approval seam was never asked to record anything
+      assert response["result"] == %{"stopReason" => "refusal"}
+      assert [notification] = notifications
+      assert not_permitted?(notification)
+      refute Enum.any?(notifications, &(&1["method"] == "session/request_permission"))
+      refute_received {:permission_requested, _}
 
-      {_, [first_request], state} =
-        Server.handle_message(
-          %{
-            "jsonrpc" => "2.0",
-            "id" => 3,
-            "method" => "session/prompt",
-            "params" => %{
-              "sessionId" => "sess-1",
-              "prompt" => [%{"type" => "text", "text" => "try"}]
-            }
-          },
-          state
-        )
+      # the turn is over: nothing pending, nothing in flight
+      assert state.pending_permissions == %{}
+      assert state.in_flight == %{}
 
-      assert first_request["id"] == "srv-1"
+      {:ok, session} = FakeHost.SessionStore.load("sess-1")
+      assert Enum.any?(session.messages, &(&1.role == :agent and &1.text == "Not permitted."))
+    end
 
-      # the client approves — resolve says {:approved, nil} — but the action
-      # is re-attempted with authorize?: true, Ash denies again, and the
-      # denial becomes a fresh permission request rather than a result.
-      {nil, [second_request], state} =
+    test "the up-front check uses the action's own actor, input and tenant" do
+      # the same prompt with an actor present is authorized: the host seam
+      # decides as before (here: pends, so the client is asked)
+      FakeHost.set_prompt_mode({:ok, :restricted})
+      FakeHost.set_permission_mode({:pending, "ref-1"})
+      FakeHost.set_request_probe(self())
+      {_, _, state} = session_new()
+
+      {nil, [outbound], state} = prompt(state)
+
+      assert outbound["method"] == "session/request_permission"
+      assert_received {:permission_requested, %{action: :restricted}}
+      assert state.in_flight == %{"sess-1" => 3}
+    end
+
+    test "a policy refusal at execution ends the turn refused — the client is not asked again" do
+      # authorization changes between the up-front check and the run (a
+      # grant revoked while the approval was pending): the check passes,
+      # the client approves, the run is forbidden.
+      FakeHost.set_prompt_mode({:ok, :gated})
+      FakeHost.set_permission_mode({:pending, "ref-1"})
+      {_, _, state} = session_new()
+
+      {nil, [%{"id" => "srv-1"}], state} = prompt(state)
+
+      FakeHost.set_gate(false)
+
+      {response, notifications, state} =
         Server.handle_message(
           %{
             "jsonrpc" => "2.0",
@@ -391,16 +392,52 @@ defmodule AshAcp.PermissionTest do
           state
         )
 
-      assert second_request["method"] == "session/request_permission"
-      assert is_map_key(state.pending_permissions, "srv-2")
+      assert response["id"] == 3
+      assert response["result"] == %{"stopReason" => "refusal"}
+      refute Enum.any?(notifications, &(&1["method"] == "session/request_permission"))
+      assert Enum.any?(notifications, &not_permitted?/1)
+      assert state.pending_permissions == %{}
+      assert state.in_flight == %{}
 
-      # and nothing executed: the transcript holds the prompt, no result text
       {:ok, session} = FakeHost.SessionStore.load("sess-1")
+      refute Enum.any?(session.messages, &(&1.role == :agent and &1.text =~ "gated ok"))
+    end
 
-      refute Enum.any?(
-               session.messages,
-               &(&1.role == :agent and String.contains?(&1.text, "restricted ok"))
-             )
+    test "a host that approves everything still cannot get past Ash policies" do
+      defmodule ApprovingPermissions do
+        @moduledoc false
+        @behaviour AshAcp.PermissionRequest
+
+        def request(_s, _a, _i), do: {:approved, nil}
+        def resolve(_ref, _outcome, _session), do: {:approved, nil}
+      end
+
+      FakeHost.set_actor(nil)
+      FakeHost.set_prompt_mode({:ok, :restricted})
+      {_, _, state} = session_new(permission_request: ApprovingPermissions)
+
+      {response, notifications, _state} = prompt(state)
+
+      assert response["result"] == %{"stopReason" => "refusal"}
+      assert Enum.any?(notifications, &not_permitted?/1)
+
+      # nothing ran
+      refute inspect(notifications) =~ "restricted ok"
+    end
+
+    test "an undecidable up-front check (:maybe) asks as before" do
+      # a read with run_queries?: false is :maybe for Ash.can — the library
+      # never refuses on a maybe; the host seam decides as it always has
+      FakeHost.set_actor(nil)
+      FakeHost.set_prompt_mode({:ok, :list_notes})
+      FakeHost.set_permission_mode({:pending, "ref-1"})
+      FakeHost.set_request_probe(self())
+      {_, _, state} = session_new()
+
+      {nil, [outbound], _state} = prompt(state)
+
+      assert outbound["method"] == "session/request_permission"
+      assert_received {:permission_requested, %{action: :list_notes}}
     end
   end
 

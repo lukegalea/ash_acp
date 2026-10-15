@@ -51,7 +51,9 @@ defmodule AshAcp do
         surface_provider: MyApp.AcpSurfaceProvider,
         ext_methods: MyApp.AcpExt,
         agent_info: %{name: "my_app", version: "1.0.0"},
-        # the command palette, pruned per actor with Ash.can?/3
+        # the command palette, pruned per actor with Ash.can?/3 — a list, or
+        # {m, f, a} / a zero-arity fun evaluated whenever a palette is built
+        # (for a palette derived at runtime, e.g. from a surface registry)
         candidate_actions: [{MyApp.Helpdesk.Ticket, :summarize}]
 
   Then run on stdio (see `AshAcp.run_stdio/1` and `mix ash_acp.stdio`) or mount
@@ -79,7 +81,7 @@ defmodule AshAcp do
   @spec acp_version() :: pos_integer()
   def acp_version, do: @acp_version
 
-  @version "0.2.0"
+  @version "0.3.0"
 
   @doc false
   @spec library_version() :: String.t()
@@ -100,6 +102,10 @@ defmodule AshAcp do
   Resolves the effective configuration: the given overrides on top of
   `:ash_acp` application env. Every documented key is carried —
   `:candidate_actions` defaults to `[]`, `:agent_info` to this library's.
+  An `{m, f, a}` or zero-arity function `:candidate_actions` is carried as
+  is and evaluated by the server each time it builds a palette — the way a
+  host whose palette is computed at runtime configures every transport,
+  `mix ash_acp.stdio` included, from app env alone.
   """
   @spec config(keyword() | map()) :: %{
           optional(:session_store) => module() | nil,
@@ -109,7 +115,7 @@ defmodule AshAcp do
           optional(:ext_methods) => module() | nil,
           optional(:authenticate) => module() | nil,
           optional(:agent_info) => map(),
-          optional(:candidate_actions) => list()
+          optional(:candidate_actions) => list() | {module(), atom(), list()} | (-> list())
         }
   def config(overrides \\ []) do
     overrides = Map.new(overrides)

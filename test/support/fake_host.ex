@@ -11,12 +11,27 @@ defmodule FakeHost.Domain do
   end
 end
 
+defmodule FakeHost.GateOpen do
+  @moduledoc """
+  A simple check whose answer the test steers (`FakeHost.set_gate/1`):
+  authorization that changes between the up-front `Ash.can?` and the run —
+  a revoked grant, say.
+  """
+  use Ash.Policy.SimpleCheck
+
+  @impl true
+  def describe(_opts), do: "the fake host's gate is open"
+
+  @impl true
+  def match?(_actor, _context, _opts), do: FakeHost.gate_open?()
+end
+
 defmodule FakeHost.Note do
   @moduledoc """
   The fake host's one resource: Simple data layer (no Postgres), policy
   authorizer backed by simple_sat. `summarize` is anyone's action;
-  `restricted` requires an actor — that is the whole authorization surface
-  the tests exercise.
+  `restricted` requires an actor; `gated` follows `FakeHost.GateOpen` —
+  that is the whole authorization surface the tests exercise.
   """
   use Ash.Resource,
     domain: FakeHost.Domain,
@@ -79,11 +94,32 @@ defmodule FakeHost.Note do
         {:ok, "restricted ok"}
       end
     end
+
+    action :gated, :string do
+      description "Runs while the fake host's gate is open"
+      argument :text, :string, allow_nil?: false
+
+      run fn _input, _context ->
+        {:ok, "gated ok"}
+      end
+    end
+
+    action :flaky, :string do
+      description "Always fails (an errored write)"
+
+      run fn _input, _context ->
+        {:error, "the bulletin board is down: secret-detail"}
+      end
+    end
   end
 
   policies do
     policy action(:restricted) do
       authorize_if actor_present()
+    end
+
+    policy action(:gated) do
+      authorize_if FakeHost.GateOpen
     end
 
     policy always() do
@@ -117,7 +153,9 @@ defmodule FakeHost do
       {:tenant_probe, nil},
       {:auth_actor, :operator},
       {:blocked, false},
-      {:released, false}
+      {:released, false},
+      {:gate, true},
+      {:request_probe, nil}
     ])
 
     :ok
@@ -147,6 +185,38 @@ defmodule FakeHost do
 
     :ok
   end
+
+  @doc "Opens or closes the `FakeHost.GateOpen` check."
+  def set_gate(open?) when is_boolean(open?), do: :ets.insert(@table, {:gate, open?})
+
+  @doc false
+  def gate_open? do
+    case :ets.lookup(@table, :gate) do
+      [{:gate, open?}] -> open?
+      _ -> true
+    end
+  end
+
+  @doc """
+  Registers a pid that receives `{:permission_requested, spec}` whenever the
+  fake `AshAcp.PermissionRequest.request/3` is called.
+  """
+  def set_request_probe(pid), do: :ets.insert(@table, {:request_probe, pid})
+
+  @doc false
+  def probe_request(spec) do
+    case :ets.lookup(@table, :request_probe) do
+      [{:request_probe, pid}] when is_pid(pid) -> send(pid, {:permission_requested, spec})
+      _ -> :ok
+    end
+  end
+
+  @doc """
+  The command palette computed at runtime — what a host whose palette is
+  derived from a registry passes as `candidate_actions: {FakeHost,
+  :candidate_actions, []}`.
+  """
+  def candidate_actions, do: [{FakeHost.Note, :summarize}, {FakeHost.Note, :restricted}]
 
   def release_blocked do
     :ets.insert(@table, {:released, true})
@@ -374,6 +444,16 @@ defmodule FakeHost do
              title: "Restricted op"
            }}
 
+        {:ok, :gated} ->
+          {:ok,
+           %{
+             resource: FakeHost.Note,
+             action: :gated,
+             inputs: %{text: prompt_text},
+             title: "Gated op",
+             kind: :execute
+           }}
+
         {:ok, :unresolvable} ->
           {:error, :no_action_matches}
 
@@ -395,7 +475,8 @@ defmodule FakeHost do
     @behaviour AshAcp.PermissionRequest
 
     @impl true
-    def request(_session, _action_spec, _inputs) do
+    def request(_session, action_spec, _inputs) do
+      FakeHost.probe_request(action_spec)
       :ets.lookup_element(FakeHost.table(), :permission_mode, 2)
     end
 
@@ -414,11 +495,22 @@ defmodule FakeHost do
     * `_ash/surfaces/list` — `notes` for everyone, `restricted` only when
       `Ash.can?/3` lets the actor run `FakeHost.Note.restricted`;
     * `_ash/surface/open` — `notes` opens; anything else is `-32602`;
-    * `_a2ui/action` — `refresh` applies at once; `publish` is
-      consequential: `{:request_permission, spec}`, then runs
-      `publish_bulletin` as the actor with `authorize?: true`.
+    * `_a2ui/action` — `refresh` applies at once; `publish`, `restricted`,
+      `gated` and `flaky` are consequential writes: `{:request_permission, spec}`,
+      then the action runs as the actor with `authorize?: true`. A refused,
+      invalid or errored run answers `outcome: "failed"`
+      (`AshAcp.ExtMethods.action_failed/2`); a policy refusal decided up
+      front (`denied_by: :policy`) too; a denied approval answers `denied`.
     """
     @behaviour AshAcp.ExtMethods
+
+    # the consequential A2UI actions, by name -> the Note action they run
+    @writes %{
+      "publish" => :publish_bulletin,
+      "restricted" => :restricted,
+      "gated" => :gated,
+      "flaky" => :flaky
+    }
 
     @impl true
     def methods, do: AshAcp.ExtMethods.conventional_methods()
@@ -442,36 +534,49 @@ defmodule FakeHost do
       {:ok, %{"outcome" => "applied", "a2ui" => [status(params["surfaceId"], "refreshed")]}}
     end
 
-    def handle("_a2ui/action", %{"action" => %{"name" => "publish"}} = params, ctx) do
-      text = get_in(params, ["action", "context", "text"]) || ""
+    def handle("_a2ui/action", %{"action" => %{"name" => name}} = params, ctx)
+        when is_map_key(@writes, name) do
+      action = Map.fetch!(@writes, name)
+      inputs = write_inputs(action, get_in(params, ["action", "context", "text"]))
+      surface_id = params["surfaceId"]
 
       case ctx.permission do
         nil ->
           {:request_permission,
            %{
              resource: FakeHost.Note,
-             action: :publish_bulletin,
-             title: "Publish bulletin",
-             inputs: %{text: text}
+             action: action,
+             title: "#{String.capitalize(name)} bulletin",
+             inputs: inputs
            }}
 
         {:approved, _approval} ->
-          {:ok, published} =
-            FakeHost.Note
-            |> Ash.ActionInput.for_action(:publish_bulletin, %{text: text})
-            |> Ash.run_action(actor: ctx.actor, authorize?: true)
+          FakeHost.Note
+          |> Ash.ActionInput.for_action(action, inputs)
+          |> Ash.run_action(actor: ctx.actor, authorize?: true)
+          |> case do
+            {:ok, text} ->
+              {:ok, %{"outcome" => "applied", "a2ui" => [status(surface_id, text)]},
+               [AshAcp.Updates.agent_message(text)]}
 
-          {:ok, %{"outcome" => "applied", "a2ui" => [status(params["surfaceId"], published)]},
-           [AshAcp.Updates.agent_message(published)]}
+            {:error, error} ->
+              {:ok, AshAcp.ExtMethods.action_failed(error, [status(surface_id, "failed")])}
+          end
+
+        :denied when ctx.denied_by == :policy ->
+          {:ok, AshAcp.ExtMethods.action_failed(:forbidden, [status(surface_id, "not allowed")])}
 
         :denied ->
-          {:ok, %{"outcome" => "denied", "a2ui" => [status(params["surfaceId"], "denied")]}}
+          {:ok, %{"outcome" => "denied", "a2ui" => [status(surface_id, "denied")]}}
       end
     end
 
     def handle("_a2ui/action", %{"action" => %{"name" => "explode"}}, _ctx), do: :not_a_result
 
     def handle("_a2ui/action", _params, _ctx), do: {:error, :unknown_action}
+
+    defp write_inputs(:flaky, _text), do: %{}
+    defp write_inputs(_action, text), do: %{text: text || ""}
 
     defp surfaces(actor) do
       notes = %{"id" => "notes", "title" => "Notes", "group" => "Workspace"}

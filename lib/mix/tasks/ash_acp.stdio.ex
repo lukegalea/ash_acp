@@ -10,7 +10,12 @@ defmodule Mix.Tasks.AshAcp.Stdio do
 
   Requires the host's `:ash_acp` application env to name the behaviour
   implementations (`session_store`, `prompt_target`,
-  `permission_request`, optional `surface_provider`, `agent_info`).
+  `permission_request`, optional `surface_provider`, `ext_methods`,
+  `authenticate`, `agent_info`, `candidate_actions`). The task configures
+  the server from app env alone, so a palette computed at runtime is named
+  there as `candidate_actions: {MyApp.Surfaces, :candidate_actions, []}` —
+  it is evaluated each time a palette is sent, after `session/new` exactly
+  as over HTTP.
 
       $ mix ash_acp.stdio
 

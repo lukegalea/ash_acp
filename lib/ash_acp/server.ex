@@ -38,13 +38,33 @@ defmodule AshAcp.Server do
   Every `available_commands_update` (after `session/new`, after the
   `session/load` replay, and closing each prompt turn) carries the
   `Ash.can?/3`-pruned commands and — when `AshAcp.SurfaceProvider` returns
-  one — the A2UI surface under `update._meta.a2ui`.
+  one — the A2UI surface under `update._meta.a2ui`. The commands come from
+  the `candidate_actions` config: a list, or an `{m, f, a}` / zero-arity
+  function evaluated whenever a palette is built, for hosts that derive the
+  palette at runtime — the shape `mix ash_acp.stdio` can carry, since it
+  configures the server from app env alone.
 
   A prompt turn that needs approval **stays open**: `session/request_permission`
   goes out with no prompt response, and the prompt's response is only sent
   when the client resolves the request — `end_turn` with the action's content
   after approval, `refusal` after denial, `-32603` if a seam violates its
   contract, or `cancelled` if the client cancels the turn meanwhile.
+
+  ## Policy refusals are never put to the client
+
+  Before the approval seam is consulted, the action is checked with
+  `Ash.can/3` — the session actor, the spec's `tenant`, and the same action
+  input or query the run will use (`maybe_is: :maybe`, `run_queries?:
+  false`). A definite `false` ends the turn `refusal` with a failed
+  `"Not permitted"` tool call update: `AshAcp.PermissionRequest.request/3`
+  is not called and no `session/request_permission` goes out, because no
+  approval could make the run succeed. `:maybe`, an error or a raise means
+  "cannot tell up front" and the flow continues exactly as before. The check
+  only spares the client a pointless prompt — the run itself is still
+  authorized (`authorize?: true`), and a refusal there (authorization that
+  changed while an approval was pending) ends the turn the same way, without
+  asking again. Consequential extension calls get the same check (see
+  `AshAcp.ExtMethods`).
 
   ## Action dispatch
 
@@ -552,21 +572,9 @@ defmodule AshAcp.Server do
         spec = normalize_spec(spec)
         session = record(state, session, :user, prompt_text)
 
-        case permission_request!(state).request(session, spec, spec.inputs) do
-          {:approved, approval} ->
-            execute_action(session, session_id, spec, request_id, state, approval)
-
-          {:denied} ->
-            denied_turn(session, session_id, spec, request_id, state)
-
-          {:pending, request_ref} ->
-            request_permission(session, session_id, spec, request_id, request_ref, state)
-
-          other ->
-            {response, notifications, _} =
-              seam_violation(request_id, permission_request!(state), "request/3", other, state)
-
-            {response, notifications, clear_in_flight(state, session_id)}
+        case precheck(spec, actor_of(session), &prompt_source/1) do
+          :forbidden -> forbidden_turn(session, session_id, request_id, state)
+          :unknown -> request_approval(session, session_id, spec, request_id, state)
         end
 
       {:error, reason} ->
@@ -580,6 +588,104 @@ defmodule AshAcp.Server do
          clear_in_flight(state, session_id)}
     end
   end
+
+  # The host's approval seam, for an action the up-front check did not refuse.
+  defp request_approval(session, session_id, spec, request_id, state) do
+    case permission_request!(state).request(session, spec, spec.inputs) do
+      {:approved, approval} ->
+        execute_action(session, session_id, spec, request_id, state, approval)
+
+      {:denied} ->
+        denied_turn(session, session_id, spec, request_id, state)
+
+      {:pending, request_ref} ->
+        request_permission(session, session_id, spec, request_id, request_ref, state)
+
+      other ->
+        {response, notifications, _} =
+          seam_violation(request_id, permission_request!(state), "request/3", other, state)
+
+        {response, notifications, clear_in_flight(state, session_id)}
+    end
+  end
+
+  # A turn whose action Ash's policies refuse the actor — up front, or at
+  # execution. No approval is asked for: it could not change the answer.
+  # `tool_call_id` is the call already announced, if any.
+  defp forbidden_turn(session, session_id, request_id, state, tool_call_id \\ nil) do
+    {tool_call_id, state} =
+      if tool_call_id, do: {tool_call_id, state}, else: next_tool_call_id(state)
+
+    record(state, session, :agent, "Not permitted.")
+
+    notifications = [
+      tool_call_update(session_id, tool_call_id, "failed", %{
+        "content" => [tool_content("Not permitted")]
+      })
+    ]
+
+    response =
+      if request_id do
+        JsonRpc.response(request_id, %{"stopReason" => "refusal"})
+      end
+
+    {response, notifications, clear_in_flight(state, session_id)}
+  end
+
+  # == the up-front authorization check =====================================
+
+  # `:forbidden` only when Ash definitely refuses; anything it cannot decide
+  # without running queries, any error and any raise (building the source
+  # included) is `:unknown`, and the caller carries on as if no check had
+  # been made. `source_of` builds what the eventual call will authorize, or
+  # nil when there is nothing to check.
+  defp precheck(spec, actor, source_of) do
+    case source_of.(spec) do
+      nil ->
+        :unknown
+
+      source ->
+        opts = put_tenant([maybe_is: :maybe, run_queries?: false], Map.get(spec, :tenant))
+
+        case Ash.can(source, actor, opts) do
+          {:ok, false} -> :forbidden
+          {:ok, false, _} -> :forbidden
+          _other -> :unknown
+        end
+    end
+  rescue
+    _error -> :unknown
+  catch
+    _kind, _reason -> :unknown
+  end
+
+  # What a prompt's run authorizes: the same action input or query
+  # `execute_action/6` builds. Types the prompt path does not run are left to
+  # the existing unsupported-type answer.
+  defp prompt_source(spec) do
+    case dispatch_type(spec) do
+      :action -> build_input(spec)
+      :read -> build_query(spec)
+      {:unsupported, _type} -> nil
+    end
+  end
+
+  # An extension call's spec names the resource, action, inputs and tenant
+  # of the call the handler will make; without `:resource`/`:action` there is
+  # nothing to check.
+  defp ext_source(%{resource: resource, action: action} = spec)
+       when is_atom(resource) and is_atom(action) and not is_nil(action) do
+    inputs = Map.get(spec, :inputs) || %{}
+
+    case action_type(resource, action) do
+      nil -> nil
+      :action -> Ash.ActionInput.for_action(resource, action, inputs)
+      :read -> Ash.Query.for_read(resource, action, inputs)
+      _write -> {resource, action, inputs}
+    end
+  end
+
+  defp ext_source(_spec), do: nil
 
   # A turn that the host's approval seam already denied: no execution, a
   # failed tool call update, and a refusal stop reason.
@@ -641,7 +747,7 @@ defmodule AshAcp.Server do
         ext_resume(ext, {:approved, approval}, tool_call, state)
 
       {:denied} ->
-        ext_resume(ext, :denied, tool_call, state)
+        ext_resume(ext, {:denied, :client}, tool_call, state)
 
       other ->
         seam_violation(ext.id, permission_request!(state), "resolve/3", other, state, [
@@ -786,7 +892,8 @@ defmodule AshAcp.Server do
       session: session,
       session_id: session_id,
       actor: (session && actor_of(session)) || state.actor,
-      permission: nil
+      permission: nil,
+      denied_by: nil
     }
   end
 
@@ -846,8 +953,17 @@ defmodule AshAcp.Server do
 
   defp ext_first(returned, ext, state), do: ext_answer(returned, ext, nil, state)
 
-  # The host's own approval seam decides first, exactly as for a prompt.
+  # Ash's answer first: a call the actor's policies refuse is denied at once
+  # (`denied_by: :policy`), with no approval and no client round trip. Then
+  # the host's own approval seam decides, exactly as for a prompt.
   defp ext_request_permission(spec, ext, state) do
+    case precheck(spec, ext.ctx.actor, &ext_source/1) do
+      :forbidden -> ext_resume(ext, {:denied, :policy}, nil, state)
+      :unknown -> ext_request_approval(spec, ext, state)
+    end
+  end
+
+  defp ext_request_approval(spec, ext, state) do
     module = permission_request!(state)
 
     case module.request(ext.ctx.session, spec, spec.inputs) do
@@ -855,7 +971,7 @@ defmodule AshAcp.Server do
         ext_resume(ext, {:approved, approval}, nil, state)
 
       {:denied} ->
-        ext_resume(ext, :denied, nil, state)
+        ext_resume(ext, {:denied, :host}, nil, state)
 
       {:pending, request_ref} ->
         session_id = ext.ctx.session_id
@@ -884,8 +1000,20 @@ defmodule AshAcp.Server do
   # The second call: the handler answers knowing the permission outcome.
   # `tool_call` is `{session_id, tool_call_id}` when the client was asked, so
   # the pending tool call it rendered is settled too.
+  defp ext_resume(ext, {:denied, by}, tool_call, state) do
+    ext
+    |> put_in([:ctx, :permission], :denied)
+    |> put_in([:ctx, :denied_by], by)
+    |> ext_call_again(tool_call, state)
+  end
+
   defp ext_resume(ext, permission, tool_call, state) do
-    ext = put_in(ext, [:ctx, :permission], permission)
+    ext
+    |> put_in([:ctx, :permission], permission)
+    |> ext_call_again(tool_call, state)
+  end
+
+  defp ext_call_again(ext, tool_call, state) do
     returned = ext.handler.handle(ext.method, ext.params, ext.ctx)
     ext_answer(returned, ext, tool_call, state)
   end
@@ -893,8 +1021,9 @@ defmodule AshAcp.Server do
   defp ext_answer(returned, ext, tool_call, state) do
     case returned do
       {:ok, result} ->
-        settled = settle_tool_call(tool_call, ext.ctx.permission, :ok)
-        {JsonRpc.response(ext.id, stringify(result)), settled, state}
+        result = stringify(result)
+        settled = settle_tool_call(tool_call, ext.ctx.permission, settlement(result))
+        {JsonRpc.response(ext.id, result), settled, state}
 
       {:ok, result, updates} when is_list(updates) ->
         ext_answer_with_updates(result, updates, ext, tool_call, state)
@@ -935,13 +1064,23 @@ defmodule AshAcp.Server do
         )
 
       session_id ->
+        result = stringify(result)
+
         notifications =
           Enum.map(updates, &Updates.notification(session_id, stringify(&1))) ++
-            settle_tool_call(tool_call, ext.ctx.permission, :ok)
+            settle_tool_call(tool_call, ext.ctx.permission, settlement(result))
 
-        {JsonRpc.response(ext.id, stringify(result)), notifications, state}
+        {JsonRpc.response(ext.id, result), notifications, state}
     end
   end
+
+  # A result carrying the conventional `outcome: "failed"` settles the pending
+  # tool call as failed too — the write did not happen.
+  defp settlement(%{"outcome" => "failed", "error" => %{"kind" => "forbidden"}}),
+    do: {:error, "Not permitted"}
+
+  defp settlement(%{"outcome" => "failed"}), do: :error
+  defp settlement(_result), do: :ok
 
   defp settle_tool_call(nil, _permission, _result), do: []
 
@@ -956,10 +1095,13 @@ defmodule AshAcp.Server do
   defp settle_tool_call({session_id, tool_call_id}, _permission, :ok),
     do: [tool_call_update(session_id, tool_call_id, "completed")]
 
-  defp settle_tool_call({session_id, tool_call_id}, _permission, :error) do
+  defp settle_tool_call(tool_call, permission, :error),
+    do: settle_tool_call(tool_call, permission, {:error, "Action failed"})
+
+  defp settle_tool_call({session_id, tool_call_id}, _permission, {:error, text}) do
     [
       tool_call_update(session_id, tool_call_id, "failed", %{
-        "content" => [tool_content("Action failed")]
+        "content" => [tool_content(text)]
       })
     ]
   end
@@ -1085,15 +1227,17 @@ defmodule AshAcp.Server do
     end
   end
 
-  defp read_rows(spec, session) do
-    query =
-      if spec[:tenant] do
-        Ash.Query.for_read(spec.resource, spec.action, spec.inputs, tenant: spec.tenant)
-      else
-        Ash.Query.for_read(spec.resource, spec.action, spec.inputs)
-      end
+  defp build_query(spec) do
+    if spec[:tenant] do
+      Ash.Query.for_read(spec.resource, spec.action, spec.inputs, tenant: spec.tenant)
+    else
+      Ash.Query.for_read(spec.resource, spec.action, spec.inputs)
+    end
+  end
 
-    query
+  defp read_rows(spec, session) do
+    spec
+    |> build_query()
     |> Ash.read(run_opts(session, spec))
     |> case do
       {:ok, records} when is_list(records) -> {:ok, records}
@@ -1155,23 +1299,12 @@ defmodule AshAcp.Server do
     {response, notifications, clear_in_flight(state, session_id)}
   end
 
-  # An action denied by Ash policies becomes a permission request bound to a
-  # synthetic reference; `resolve/3` (or the default) decides what a client
-  # approval means for it. Other failures are wire errors.
-  defp unauthorized_turn(session, session_id, spec, request_id, state) do
-    request_permission(
-      session,
-      session_id,
-      spec,
-      request_id,
-      {:ash_denied, spec.resource, spec.action},
-      state
-    )
-  end
-
-  defp action_error_turn(error_class, session, session_id, spec, request_id, tool_call_id, state) do
+  # Ash's policies refused the run itself: the turn ends refused, settling
+  # the announced tool call. The client is not asked to approve it — an
+  # approval cannot change a policy's answer. Other failures are wire errors.
+  defp action_error_turn(error_class, session, session_id, _spec, request_id, tool_call_id, state) do
     if forbidden?(error_class) do
-      unauthorized_turn(session, session_id, spec, request_id, state)
+      forbidden_turn(session, session_id, request_id, state, tool_call_id)
     else
       notifications = [
         tool_call_update(session_id, tool_call_id, "failed", %{
@@ -1265,8 +1398,7 @@ defmodule AshAcp.Server do
   # surface, carried verbatim under `update._meta.a2ui` (the ACP `_meta`
   # extension point). `reason` tells the provider why it is asked.
   defp final_update(state, session, session_id, reason) do
-    candidates = Map.get(state.config, :candidate_actions) || []
-    commands = AvailableActions.for_actor(actor_of(session), candidates)
+    commands = AvailableActions.for_actor(actor_of(session), candidate_actions(state))
 
     update =
       commands
@@ -1275,6 +1407,42 @@ defmodule AshAcp.Server do
 
     {Updates.notification(session_id, update), state}
   end
+
+  # The configured palette: a list, or — for a host that derives it at
+  # runtime (a surface registry) — an `{m, f, a}` or zero-arity function
+  # evaluated each time a palette is built. A failing provider is logged and
+  # yields an empty palette: it must never break a session.
+  defp candidate_actions(state) do
+    case resolve_candidates(Map.get(state.config, :candidate_actions)) do
+      list when is_list(list) ->
+        list
+
+      other ->
+        Logger.error(fn ->
+          "AshAcp: candidate_actions resolved to #{inspect(other)}, not a list — sending an empty palette"
+        end)
+
+        []
+    end
+  rescue
+    e ->
+      Logger.error(fn ->
+        "AshAcp: candidate_actions provider failed — sending an empty palette: " <>
+          Exception.format(:error, e, __STACKTRACE__)
+      end)
+
+      []
+  end
+
+  defp resolve_candidates(nil), do: []
+  defp resolve_candidates(list) when is_list(list), do: list
+
+  defp resolve_candidates({module, fun, args})
+       when is_atom(module) and is_atom(fun) and is_list(args),
+       do: apply(module, fun, args)
+
+  defp resolve_candidates(fun) when is_function(fun, 0), do: fun.()
+  defp resolve_candidates(other), do: other
 
   defp maybe_put_a2ui(update, nil), do: update
   defp maybe_put_a2ui(update, payload), do: Map.put(update, "_meta", %{"a2ui" => payload})
