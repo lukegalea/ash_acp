@@ -97,6 +97,35 @@ defmodule AshAcp.A2uiActionOutcomeTest do
       assert outbound["method"] == "session/request_permission"
     end
 
+    test "an update with no record is not checked up front: its owner is still asked" do
+      # Judged against a blank Note, `owner == ^actor(:name)` is false for
+      # everyone; without the record the check must not decide at all.
+      FakeHost.set_actor(%{name: "pat"})
+      FakeHost.set_permission_mode({:pending, "ref-1"})
+
+      config = FakeHost.config(ext_methods: AshAcp.A2uiActionOutcomeTest.DeniedBy)
+      {_, _, state} = call(Server.new(config), "session/new", %{"cwd" => "/tmp"}, 2)
+
+      {nil, [outbound], _} = call(state, "_x/edit", %{"sessionId" => "sess-1"})
+      assert outbound["method"] == "session/request_permission"
+    end
+
+    test "an update is checked against the record the host names" do
+      FakeHost.set_actor(%{name: "pat"})
+      FakeHost.set_permission_mode({:pending, "ref-1"})
+
+      config = FakeHost.config(ext_methods: AshAcp.A2uiActionOutcomeTest.DeniedBy)
+      {_, _, state} = call(Server.new(config), "session/new", %{"cwd" => "/tmp"}, 2)
+
+      # their own note: allowed, so the approval seam decides
+      {nil, [outbound], _} = call(state, "_x/edit", %{"sessionId" => "sess-1", "owner" => "pat"})
+      assert outbound["method"] == "session/request_permission"
+
+      # someone else's: refused up front, nobody asked
+      {response, [], _} = call(state, "_x/edit", %{"sessionId" => "sess-1", "owner" => "sam"})
+      assert response["result"] == %{"permission" => "denied", "denied_by" => "policy"}
+    end
+
     test "an authorized write still goes through the host's approval seam" do
       FakeHost.set_permission_mode({:pending, "ref-1"})
       FakeHost.set_request_probe(self())
@@ -243,12 +272,21 @@ defmodule AshAcp.A2uiActionOutcomeTest.DeniedBy do
   @behaviour AshAcp.ExtMethods
 
   @impl true
-  def methods, do: ["_x/guarded_write", "_x/unknowable_write"]
+  def methods, do: ["_x/guarded_write", "_x/unknowable_write", "_x/edit"]
 
   @impl true
   def handle("_x/guarded_write", _params, %{permission: nil}) do
     {:request_permission,
      %{title: "Guarded write", resource: FakeHost.Note, action: :restricted, inputs: %{text: "x"}}}
+  end
+
+  def handle("_x/edit", params, %{permission: nil}) do
+    spec = %{title: "Edit", resource: FakeHost.Note, action: :edit_note, inputs: %{title: "t"}}
+
+    case params["owner"] do
+      nil -> {:request_permission, spec}
+      owner -> {:request_permission, Map.put(spec, :record, %FakeHost.Note{owner: owner})}
+    end
   end
 
   def handle("_x/unknowable_write", _params, %{permission: nil}) do

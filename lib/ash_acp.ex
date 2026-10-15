@@ -81,7 +81,7 @@ defmodule AshAcp do
   @spec acp_version() :: pos_integer()
   def acp_version, do: @acp_version
 
-  @version "0.3.0"
+  @version "0.3.1"
 
   @doc false
   @spec library_version() :: String.t()

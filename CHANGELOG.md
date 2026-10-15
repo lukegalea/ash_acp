@@ -4,6 +4,18 @@
 
 # Changelog
 
+## 0.3.1 (2026-10-15)
+
+* **Fix: the up-front check no longer refuses an actor's own update or
+  destroy.** 0.3.0 checked an extension call's update or destroy with
+  `Ash.can/3` against a blank struct of the resource, and a filter policy
+  (`owner_id == ^actor(:id)`, a team or tenant scope) is definitely false
+  against nil columns — so a write the actor was allowed to make was refused
+  without anyone being asked. An update or destroy is now checked only when
+  the spec carries the `:record` it will change; without one the approval
+  seam decides, as before 0.3.0. Creates, generic actions and reads are
+  unchanged.
+
 ## 0.3.0 (2026-10-15)
 
 Fixes from a low-privilege run (a user who is neither an administrator nor
