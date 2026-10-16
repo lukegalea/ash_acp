@@ -34,7 +34,7 @@ shapes everything else — **no second authorization model**:
 | ACP v1 | Ash |
 |---|---|
 | Session (`session/new`, `session/load`) | the host's session resource, via `AshAcp.SessionStore` |
-| Prompt (`session/prompt`) | a declared Ash action, resolved by `AshAcp.PromptTarget`, executed with `Ash.run_action/2` (actor from the session, `authorize?: true`) |
+| Prompt (`session/prompt`) | a declared Ash action, resolved by `AshAcp.PromptTarget`, executed with `Ash.run_action/2` (generic action) or `Ash.read/2` (read action), actor from the session, `authorize?: true`; create/update/destroy are answered `-32603` |
 | Permission request (`session/request_permission`) | the host's approval resource (ADR 0015), via `AshAcp.PermissionRequest` |
 | `session/update` — transcript chunks | the session resource's messages, replayed and appended through the store |
 | `session/update` — `availableCommands` | `Ash.can?/3` pruned action surface (`AshAcp.AvailableActions`) — sent after `session/new`, after the `session/load` replay, and closing every turn |
@@ -69,6 +69,7 @@ config :ash_acp,
   permission_request: MyApp.AcpPermissionRequest,
   surface_provider: MyApp.AcpSurfaceProvider,
   ext_methods: MyApp.AcpExt,
+  authenticate: MyApp.AcpAuth,          # optional AshAcp.Authenticator
   agent_info: %{name: "my_app", version: "1.0.0"},
   # a list, or {m, f, a} / a zero-arity fun evaluated per palette
   candidate_actions: [{MyApp.Helpdesk.Ticket, :summarize}]
@@ -80,7 +81,11 @@ action reaches `AshAcp.PermissionRequest`, the server checks it with
 ends the turn `refusal` with a failed `Not permitted` tool call — no
 approval is recorded and no `session/request_permission` goes out. When the
 check cannot decide up front, the flow is unchanged, and the run itself is
-always authorized with `authorize?: true`.
+always authorized with `authorize?: true`. A consequential extension call
+gets the same check when its spec names the call it will make (`:resource`,
+`:action`, `:inputs`, `:tenant`, and for an update or destroy the `:record`
+it will change — without a record, an update or destroy goes to the
+approval seam unchecked).
 
 ## Extension methods
 

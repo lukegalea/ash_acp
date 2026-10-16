@@ -24,14 +24,26 @@ data on the host's approval resource, never an authorization authority.
      `%{role: :user | :agent, text: binary}`). The **actor is the only
      authorization identity** the wire ever sees.
    * `AshAcp.PromptTarget` — map prompt text to a declared action:
-     `{:ok, %{resource:, action:, inputs:, title:, kind:}}`. This is the
-     only place business routing logic belongs, and it belongs in the host.
+     `{:ok, %{resource:, action:, inputs:, title:, kind:}}` (or
+     `{:ok, %{action_input:}}`). This is the only place business routing
+     logic belongs, and it belongs in the host. A generic action runs with
+     `Ash.run_action/2`; a read action runs with `Ash.read/2` and answers
+     the first 50 rows plus the total count (`row_fields:` picks the
+     columns); a create, update or destroy is not a prompt surface and is
+     answered with `-32603`.
    * `AshAcp.PermissionRequest` — `request/3` consults your approval
      resource (ADR 0015): `{:approved, record}`, `{:denied}`, or
      `{:pending, ref}` + optional `resolve/3` mapping the client's outcome
      back onto that resource. It is only asked about actions `Ash.can/3`
      does not definitely refuse — a policy refusal ends the turn before any
      approval exists, and is never put to the client.
+   * `AshAcp.Authenticator` (optional, configured as `authenticate:`) —
+     `authenticate/1` gets the params of `initialize`, `session/new` and
+     `session/load`; `{:ok, actor}` makes that actor the session's actor,
+     `{:error, _}` answers `-32000`. With it configured, `session/load` of a
+     session that has an owner, by a different authenticated actor, is
+     `-32002` (sessions stored without an owner are not checked). Without it the
+     server authenticates nothing and must run behind a trusted boundary.
    * `AshAcp.SurfaceProvider` (optional) — return your A2UI descriptor JSON;
      it is carried verbatim under `update._meta.a2ui`. `meta.reason` is
      `:session_new | :session_load | :turn_end` — on `:session_load` return
@@ -43,8 +55,12 @@ data on the host's approval resource, never an authorization authority.
      `authorize?: true`; return `{:request_permission, spec}` for a
      consequential operation — never decide approval yourself. Put the Ash
      call you will make in the spec (`resource:`, `action:`, `inputs:`,
-     `tenant:`) so the library can refuse a policy-forbidden one up front
-     (`permission: :denied, denied_by: :policy`). `_a2ui/action` answers
+     `tenant:`, and for an update or destroy the `record:` it will change)
+     so the library can refuse a policy-forbidden one up front
+     (`permission: :denied, denied_by: :policy`). An update or destroy
+     without `record:` is not checked up front; the approval seam decides.
+     Return `{:ok, result, updates}` to emit `session/update`s built with
+     `AshAcp.Updates`. `_a2ui/action` answers
      `outcome: "applied"` **only** when the write succeeded; a refused,
      invalid or errored write is `"failed"` with
      `AshAcp.ExtMethods.action_failed(error, a2ui)` (a safe `{kind,
@@ -61,7 +77,10 @@ data on the host's approval resource, never an authorization authority.
    included — sends it without a hand-built config.
 3. **Pick a transport**: `AshAcp.run_stdio/0` / `mix ash_acp.stdio` for the
    ACP-native stdio loop, or mount `AshAcp.Plug` under your Phoenix
-   endpoint. Neither contains business logic; do not add any there.
+   endpoint. The Plug raises without a non-empty `:secret_key_base` init
+   option and answers `401` unless the `x-acp-connection` header carries a
+   token minted with `AshAcp.Plug.connection_token/2`. Neither transport
+   contains business logic; do not add any there.
 4. **On protocol bumps**: `AshAcp.acp_version/0` is the pin. Change it only
    with a schema revision, regenerate `priv/acp_fixtures/`
    (`REGEN_FIXTURES=1 mix test test/ash_acp/fixtures_test.exs`) and diff the
@@ -83,6 +102,10 @@ data on the host's approval resource, never an authorization authority.
   schema's (`availableCommands`, `sessionId`, `stopReason`); Elixir-side
   names may read naturally (`available_actions`). Do not invent new
   `sessionUpdate` types — unknown ones degrade clients.
+* **Money never becomes a float.** Values on the wire are stringified: a
+  `Decimal` is its exact string, a money value is
+  `{"amount": "<exact string>", "currency": "<code>"}`, dates and times are
+  ISO8601, other unknown structs become inspect text.
 * **Ordering is part of the contract**: a turn's notifications precede the
   response that closes it; `handle_message` returns them in that order and
   transports write them in that order.
