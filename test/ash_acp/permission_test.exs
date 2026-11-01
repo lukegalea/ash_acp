@@ -96,6 +96,31 @@ defmodule AshAcp.PermissionTest do
     end
   end
 
+  describe "the options a permission request offers" do
+    test "a host can leave allow_always out" do
+      FakeHost.set_permission_mode({:pending, "approval-ref-9"})
+      {_, _, state} = session_new(permission_options: [:allow_once, "reject_once"])
+
+      {nil, [outbound], _state} = publish_prompt(state)
+
+      assert outbound["params"]["options"] == [
+               %{"optionId" => "allow_once", "name" => "Allow once", "kind" => "allow_once"},
+               %{"optionId" => "reject_once", "name" => "Reject once", "kind" => "reject_once"}
+             ]
+    end
+
+    test "the configuration names kinds, normalized, and refuses one ACP does not define" do
+      assert AshAcp.config(permission_options: [:allow_once]).permission_options == ["allow_once"]
+
+      assert AshAcp.config([]).permission_options ==
+               ["allow_once", "allow_always", "reject_once"]
+
+      assert_raise ArgumentError, ~r/unknown ACP permission option "allow_forever"/, fn ->
+        AshAcp.config(permission_options: ["allow_forever"])
+      end
+    end
+  end
+
   describe "pending approvals keep the prompt turn open" do
     test "prompt emits session/request_permission with NO prompt response yet" do
       FakeHost.set_permission_mode({:pending, "approval-ref-1"})

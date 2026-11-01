@@ -81,7 +81,7 @@ defmodule AshAcp do
   @spec acp_version() :: pos_integer()
   def acp_version, do: @acp_version
 
-  @version "0.3.1"
+  @version "0.4.0"
 
   @doc false
   @spec library_version() :: String.t()
@@ -95,8 +95,18 @@ defmodule AshAcp do
     :ext_methods,
     :agent_info,
     :authenticate,
-    :candidate_actions
+    :candidate_actions,
+    :permission_options
   ]
+
+  @permission_option_names %{
+    "allow_once" => "Allow once",
+    "allow_always" => "Allow always",
+    "reject_once" => "Reject once",
+    "reject_always" => "Reject always"
+  }
+
+  @default_permission_options ["allow_once", "allow_always", "reject_once"]
 
   @doc """
   Resolves the effective configuration: the given overrides on top of
@@ -106,6 +116,12 @@ defmodule AshAcp do
   is and evaluated by the server each time it builds a palette — the way a
   host whose palette is computed at runtime configures every transport,
   `mix ash_acp.stdio` included, from app env alone.
+
+  `:permission_options` names the ACP `PermissionOptionKind`s a
+  `session/request_permission` offers, in order (strings or atoms), and
+  defaults to `allow_once`, `allow_always`, `reject_once`. A host whose
+  approval resource has nowhere to remember a standing grant leaves
+  `allow_always` out. An unknown kind raises `ArgumentError`.
   """
   @spec config(keyword() | map()) :: %{
           optional(:session_store) => module() | nil,
@@ -115,7 +131,8 @@ defmodule AshAcp do
           optional(:ext_methods) => module() | nil,
           optional(:authenticate) => module() | nil,
           optional(:agent_info) => map(),
-          optional(:candidate_actions) => list() | {module(), atom(), list()} | (-> list())
+          optional(:candidate_actions) => list() | {module(), atom(), list()} | (-> list()),
+          optional(:permission_options) => [String.t()]
         }
   def config(overrides \\ []) do
     overrides = Map.new(overrides)
@@ -128,6 +145,33 @@ defmodule AshAcp do
       info when is_map(info) -> info
     end)
     |> Map.update(:candidate_actions, [], &(&1 || []))
+    |> Map.update(:permission_options, @default_permission_options, fn kinds ->
+      kinds |> permission_options() |> Enum.map(& &1["kind"])
+    end)
+  end
+
+  @doc """
+  The `PermissionOption`s a `session/request_permission` offers for `kinds`
+  (the `:permission_options` config; `nil` for the default), as wire maps
+  whose `optionId` is the kind. Raises `ArgumentError` for an unknown kind.
+  """
+  @spec permission_options([String.t() | atom()] | nil) :: [map()]
+  def permission_options(nil), do: permission_options(@default_permission_options)
+
+  def permission_options(kinds) when is_list(kinds) do
+    Enum.map(kinds, fn kind ->
+      kind = to_string(kind)
+
+      case Map.fetch(@permission_option_names, kind) do
+        {:ok, name} ->
+          %{"optionId" => kind, "name" => name, "kind" => kind}
+
+        :error ->
+          raise ArgumentError,
+                "unknown ACP permission option #{inspect(kind)}; expected one of " <>
+                  Enum.join(Map.keys(@permission_option_names), ", ")
+      end
+    end)
   end
 
   @doc """

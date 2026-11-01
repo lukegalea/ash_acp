@@ -4,6 +4,17 @@
 
 # Changelog
 
+## 0.4.0 (2026-11-01)
+
+* **`:permission_options` config.** Names the ACP `PermissionOptionKind`s a
+  `session/request_permission` offers, in order (`allow_once`,
+  `allow_always`, `reject_once`, `reject_always`; strings or atoms). The
+  default is unchanged: `allow_once`, `allow_always`, `reject_once`. A host
+  whose approval resource cannot remember a standing grant can leave
+  `allow_always` out instead of treating it as once. An unknown kind raises
+  `ArgumentError` from `AshAcp.config/1`. `AshAcp.permission_options/1`
+  builds the wire options.
+
 ## 0.3.1 (2026-10-15)
 
 * **Fix: the up-front check no longer refuses an actor's own update or

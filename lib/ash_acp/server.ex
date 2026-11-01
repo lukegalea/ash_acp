@@ -116,12 +116,6 @@ defmodule AshAcp.Server do
           outbound_id_counter: non_neg_integer()
         }
 
-  @default_permission_options [
-    %{"optionId" => "allow_once", "name" => "Allow once", "kind" => "allow_once"},
-    %{"optionId" => "allow_always", "name" => "Allow always", "kind" => "allow_always"},
-    %{"optionId" => "reject_once", "name" => "Reject once", "kind" => "reject_once"}
-  ]
-
   @max_read_rows 50
 
   @doc "Builds the initial state from a config map (the `AshAcp.config/1` shape)."
@@ -724,7 +718,7 @@ defmodule AshAcp.Server do
   defp request_permission(session, session_id, spec, request_id, request_ref, state) do
     {tool_call_id, state} = next_tool_call_id(state)
     {outbound_id, state} = next_outbound_id(state)
-    outbound = permission_request(outbound_id, session_id, tool_call_id, spec, request_ref)
+    outbound = permission_request(outbound_id, session_id, tool_call_id, spec, request_ref, state)
 
     state = %{
       state
@@ -826,7 +820,7 @@ defmodule AshAcp.Server do
     end
   end
 
-  defp permission_request(outbound_id, session_id, tool_call_id, spec, request_ref) do
+  defp permission_request(outbound_id, session_id, tool_call_id, spec, request_ref, state) do
     JsonRpc.request(outbound_id, "session/request_permission", %{
       "sessionId" => session_id,
       "toolCall" => %{
@@ -835,7 +829,7 @@ defmodule AshAcp.Server do
         "kind" => tool_kind(spec),
         "status" => "pending"
       },
-      "options" => @default_permission_options,
+      "options" => AshAcp.permission_options(Map.get(state.config, :permission_options)),
       "_meta" => %{"requestRef" => encode_ref(request_ref)}
     })
   end
@@ -990,7 +984,9 @@ defmodule AshAcp.Server do
         session_id = ext.ctx.session_id
         {tool_call_id, state} = next_tool_call_id(state)
         {outbound_id, state} = next_outbound_id(state)
-        outbound = permission_request(outbound_id, session_id, tool_call_id, spec, request_ref)
+
+        outbound =
+          permission_request(outbound_id, session_id, tool_call_id, spec, request_ref, state)
 
         pending = %{
           kind: :ext,

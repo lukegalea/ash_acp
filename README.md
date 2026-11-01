@@ -72,8 +72,14 @@ config :ash_acp,
   authenticate: MyApp.AcpAuth,          # optional AshAcp.Authenticator
   agent_info: %{name: "my_app", version: "1.0.0"},
   # a list, or {m, f, a} / a zero-arity fun evaluated per palette
-  candidate_actions: [{MyApp.Helpdesk.Ticket, :summarize}]
+  candidate_actions: [{MyApp.Helpdesk.Ticket, :summarize}],
+  # the PermissionOptionKinds a permission request offers (default below)
+  permission_options: [:allow_once, :allow_always, :reject_once]
 ```
+
+Offer `allow_always` only when the host's approval resource can remember the
+standing grant it implies; otherwise leave it out of `permission_options`
+rather than treating it as once.
 
 **Policy refusals are never put to the client.** Before a consequential
 action reaches `AshAcp.PermissionRequest`, the server checks it with
