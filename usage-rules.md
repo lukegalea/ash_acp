@@ -75,6 +75,10 @@ data on the host's approval resource, never an authorization authority.
    list. A palette computed at runtime is `{m, f, a}` (or a zero-arity fun):
    evaluated per palette, so every transport — `mix ash_acp.stdio`
    included — sends it without a hand-built config.
+   `permission_options` lists the `PermissionOptionKind`s a permission
+   request offers (default `allow_once`, `allow_always`, `reject_once`);
+   leave `allow_always` out unless your approval resource can remember the
+   standing grant it implies.
 3. **Pick a transport**: `AshAcp.run_stdio/0` / `mix ash_acp.stdio` for the
    ACP-native stdio loop, or mount `AshAcp.Plug` under your Phoenix
    endpoint. The Plug raises without a non-empty `:secret_key_base` init
