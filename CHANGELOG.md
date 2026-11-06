@@ -4,6 +4,10 @@
 
 # Changelog
 
+## Unreleased
+
+Requires Elixir 1.20 or later.
+
 ## 0.5.0 (2026-11-06)
 
 * **Optional `:kind_resolver` config (additive).** An `AshAcp.KindResolver`
