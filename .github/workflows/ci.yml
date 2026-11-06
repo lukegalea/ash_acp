@@ -16,8 +16,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: erlef/setup-beam@v1
         with:
-          otp-version: "27"
-          elixir-version: "1.18"
+          otp-version: "27.3.4"
+          elixir-version: "1.20.4"
       - run: mix deps.get
       - run: mix format --check-formatted
       - run: mix compile --warnings-as-errors
