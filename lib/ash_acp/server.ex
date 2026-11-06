@@ -563,7 +563,7 @@ defmodule AshAcp.Server do
   defp run_prompt_turn(session, session_id, prompt_text, request_id, state) do
     case prompt_target!(state).resolve(session_id, prompt_text, %{"session" => session}) do
       {:ok, spec} ->
-        spec = normalize_spec(spec)
+        spec = normalize_spec(spec, state.config)
         session = record(state, session, :user, prompt_text)
 
         case precheck(spec, actor_of(session), &prompt_source/1) do
@@ -950,7 +950,7 @@ defmodule AshAcp.Server do
 
   defp ext_first({:request_permission, spec}, ext, state) when is_map(spec) do
     if ext.ctx.session do
-      ext_request_permission(normalize_ext_spec(spec, ext), ext, state)
+      ext_request_permission(normalize_ext_spec(spec, ext, state.config), ext, state)
     else
       {JsonRpc.std_error(ext.id, -32602, %{
          "reason" => "#{ext.method} needs a sessionId: the operation requires permission"
@@ -1118,10 +1118,12 @@ defmodule AshAcp.Server do
   # The spec handed to `AshAcp.PermissionRequest.request/3`: the host's keys
   # (e.g. `:resource`/`:action`) kept, the prompt-spec keys defaulted, and
   # the originating call attached under `:ext`.
-  defp normalize_ext_spec(spec, ext) do
+  defp normalize_ext_spec(spec, ext, config) do
     spec
     |> Map.put_new(:title, ext.method)
-    |> Map.put_new(:kind, :execute)
+    |> Map.put_new_lazy(:kind, fn ->
+      resolve_kind(config, Map.get(spec, :resource), Map.get(spec, :action), :execute)
+    end)
     |> Map.put_new(:inputs, %{})
     |> Map.put_new(:name, ext.method)
     |> Map.put(:ext, %{method: ext.method, params: ext.params})
@@ -1630,16 +1632,18 @@ defmodule AshAcp.Server do
 
   defp get_key(_other, _key), do: nil
 
-  defp normalize_spec(%{action_input: %Ash.ActionInput{}} = spec) do
+  defp normalize_spec(%{action_input: %Ash.ActionInput{} = input} = spec, config) do
     spec
     |> Map.put_new(:title, "Run action")
     |> Map.put_new(:inputs, %{})
-    |> Map.put_new(:kind, :execute)
+    |> Map.put_new_lazy(:kind, fn ->
+      resolve_kind(config, input.resource, input.action && input.action.name, :execute)
+    end)
     |> Map.put_new(:name, spec[:title] || "Run action")
     |> Map.put_new(:tenant, nil)
   end
 
-  defp normalize_spec(%{resource: resource, action: action} = spec)
+  defp normalize_spec(%{resource: resource, action: action} = spec, config)
        when is_atom(resource) and is_atom(action) do
     name = "#{resource |> Module.split() |> Enum.join(".")}.#{action}"
     type = action_type(resource, action)
@@ -1649,14 +1653,14 @@ defmodule AshAcp.Server do
       action: action,
       inputs: Map.get(spec, :inputs, %{}),
       title: Map.get(spec, :title) || name,
-      kind: Map.get(spec, :kind) || default_kind(type),
+      kind: Map.get(spec, :kind) || resolve_kind(config, resource, action, default_kind(type)),
       name: name,
       tenant: Map.get(spec, :tenant),
       row_fields: Map.get(spec, :row_fields)
     }
   end
 
-  defp normalize_spec(other) do
+  defp normalize_spec(other, _config) do
     raise ArgumentError,
           "AshAcp.PromptTarget must return {:ok, %{resource:, action:, inputs:}} or {:ok, %{action_input:}}, got: #{inspect(other)}"
   end
@@ -1670,6 +1674,11 @@ defmodule AshAcp.Server do
 
   defp default_kind(:read), do: :read
   defp default_kind(_type), do: :execute
+
+  # The host's `AshAcp.KindResolver`, when configured, names the kind of an
+  # action whose spec does not; `default` otherwise (see that module).
+  defp resolve_kind(config, resource, action, default),
+    do: AshAcp.KindResolver.resolve(Map.get(config, :kind_resolver), resource, action, default)
 
   defp tool_kind(%{kind: kind}) when is_atom(kind), do: to_string(kind)
   defp tool_kind(%{kind: kind}) when is_binary(kind), do: kind

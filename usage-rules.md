@@ -67,8 +67,17 @@ data on the host's approval resource, never an authorization authority.
      message}` — never record contents); a declined approval is
      `"denied"`.
    * `AshAcp.SessionStore.list/1` (optional) — enables `session/list`.
+   * `AshAcp.KindResolver` (optional, configured as `kind_resolver:`) —
+     `kind(resource, action)` names the ACP tool kind (`read`, `edit`,
+     `delete`, ...) of an action whose spec sets no `:kind`, for example from
+     a declaration the host keeps of what each action does. `nil` keeps the
+     library default (`read` for a read action, else `execute`; `execute`
+     for an extension method's permission request). A spec's own `:kind`
+     always wins. Any other return, or a raise, fails the request with
+     `-32603` and the action does not run. It labels; it never authorizes.
 2. **Configure** `:ash_acp` application env (`session_store`,
    `prompt_target`, `permission_request`, `surface_provider`, `ext_methods`,
+   `kind_resolver`,
    `authenticate`, `agent_info`) — `AshAcp.config/0` carries every key,
    and optionally `candidate_actions` — the list your clients see, pruned
    per actor by `Ash.can?/3`. Hide an action with a policy, not with this

@@ -22,7 +22,8 @@ defmodule AshAcp.PromptTarget do
         action: :summarize,
         inputs: %{text: "..."},
         title: "Summarize ticket",   # optional, becomes the tool_call title
-        kind: :read                  # optional ACP tool kind; default :execute
+        kind: :read                  # optional ACP tool kind; else the
+                                     # AshAcp.KindResolver, else :execute
       }
 
       # or a prebuilt input, when the host needs templates/load statements:
