@@ -59,6 +59,7 @@ Host-implemented behaviours; the library ships none of them:
 | `AshAcp.Authenticator` (optional) | `authenticate/1` | `{:ok, actor}` on `initialize` / `session/new` / `session/load`; the actor becomes the session's actor; `{:error, _}` rejects with `-32000`. Unconfigured, the server must run behind a trusted boundary only |
 | `AshAcp.SurfaceProvider` (optional) | `surface/2` | A2UI surface descriptors carried under `update._meta.a2ui`; `meta.reason` is `:session_new`, `:session_load` or `:turn_end` |
 | `AshAcp.ExtMethods` (optional) | `methods/0, handle/3` (+ optional `capabilities/1`) | `_`-prefixed extension methods — see below |
+| `AshAcp.KindResolver` (optional) | `kind/2` | the ACP tool kind of an action whose spec sets no `:kind`; `nil` keeps the default (`read` for a read action, else `execute`). Unconfigured, kinds are unchanged |
 
 Configure in application env:
 
@@ -74,7 +75,9 @@ config :ash_acp,
   # a list, or {m, f, a} / a zero-arity fun evaluated per palette
   candidate_actions: [{MyApp.Helpdesk.Ticket, :summarize}],
   # the PermissionOptionKinds a permission request offers (default below)
-  permission_options: [:allow_once, :allow_always, :reject_once]
+  permission_options: [:allow_once, :allow_always, :reject_once],
+  # optional AshAcp.KindResolver: kind(resource, action) -> tool kind | nil
+  kind_resolver: MyApp.AcpKinds
 ```
 
 Offer `allow_always` only when the host's approval resource can remember the

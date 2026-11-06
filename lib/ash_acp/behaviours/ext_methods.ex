@@ -61,7 +61,8 @@ defmodule AshAcp.ExtMethods do
     Requires a session.
   * `{:request_permission, spec}` — the operation is consequential. `spec`
     is handed to `AshAcp.PermissionRequest.request/3` exactly like a prompt's
-    action spec (`:title`, optional `:kind` (default `:execute`), `:inputs`,
+    action spec (`:title`, optional `:kind` (else the `AshAcp.KindResolver`'s
+    kind for `:resource`/`:action`, else `:execute`), `:inputs`,
     plus whatever the host's seam reads, e.g. `:resource`/`:action`); the
     library adds `ext: %{method: m, params: p}`. When the spec names the
     Ash call the handler will make — `:resource` and `:action`, plus the

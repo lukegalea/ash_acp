@@ -4,6 +4,18 @@
 
 # Changelog
 
+## 0.5.0 (2026-11-06)
+
+* **Optional `:kind_resolver` config (additive).** An `AshAcp.KindResolver`
+  module whose `kind(resource, action)` names the ACP tool kind of an action
+  whose spec sets no `:kind`: the prompt path, a prebuilt action input, and
+  an extension method's `{:request_permission, spec}` that names
+  `:resource` and `:action`. `nil` keeps the default. A spec's own `:kind`
+  still wins. With no resolver configured every kind, and every golden
+  fixture, is unchanged. A resolver that returns something other than an
+  ACP tool kind, or raises, fails the request with `-32603` and the action
+  does not run.
+
 ## 0.4.0 (2026-11-01)
 
 * **`:permission_options` config.** Names the ACP `PermissionOptionKind`s a

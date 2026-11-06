@@ -81,7 +81,7 @@ defmodule AshAcp do
   @spec acp_version() :: pos_integer()
   def acp_version, do: @acp_version
 
-  @version "0.4.0"
+  @version "0.5.0"
 
   @doc false
   @spec library_version() :: String.t()
@@ -96,7 +96,8 @@ defmodule AshAcp do
     :agent_info,
     :authenticate,
     :candidate_actions,
-    :permission_options
+    :permission_options,
+    :kind_resolver
   ]
 
   @permission_option_names %{
@@ -122,6 +123,10 @@ defmodule AshAcp do
   defaults to `allow_once`, `allow_always`, `reject_once`. A host whose
   approval resource has nowhere to remember a standing grant leaves
   `allow_always` out. An unknown kind raises `ArgumentError`.
+
+  `:kind_resolver` is an optional `AshAcp.KindResolver` that names the ACP
+  tool kind of an action whose spec does not set `:kind`. Without one, the
+  kinds are the library defaults.
   """
   @spec config(keyword() | map()) :: %{
           optional(:session_store) => module() | nil,
@@ -132,7 +137,8 @@ defmodule AshAcp do
           optional(:authenticate) => module() | nil,
           optional(:agent_info) => map(),
           optional(:candidate_actions) => list() | {module(), atom(), list()} | (-> list()),
-          optional(:permission_options) => [String.t()]
+          optional(:permission_options) => [String.t()],
+          optional(:kind_resolver) => module() | nil
         }
   def config(overrides \\ []) do
     overrides = Map.new(overrides)
